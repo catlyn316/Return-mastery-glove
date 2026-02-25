@@ -1,4 +1,4 @@
--- 貓玲的彈簧精通腳本 v1.2
+-- 貓玲的彈簧精通腳本 v1.3
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -555,16 +555,29 @@ autoAttackButton.MouseButton1Click:Connect(function()
         autoAttackStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
         
         local lastAttack = 0
+        local lastJumpTime = 0
+        local jumpCooldown = 0.5  -- 跳躍冷卻時間
+        
         connections.autoAttack = RunService.Heartbeat:Connect(function()
             local target = getNearestPlayer()
             if target and target.Character then
                 local torso = target.Character:FindFirstChild("Torso")
                 if torso then
-                    -- 跳躍
-                    makeJump()
+                    local now = tick()
+                    
+                    -- 跳躍 (確保落地後才能再次跳躍)
+                    if isOnGround() and (now - lastJumpTime) >= jumpCooldown then
+                        local char = player.Character
+                        if char then
+                            local hum = char:FindFirstChildOfClass("Humanoid")
+                            if hum then
+                                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                                lastJumpTime = now
+                            end
+                        end
+                    end
                     
                     -- 攻擊
-                    local now = tick()
                     if now - lastAttack >= values.attackInterval then
                         pcall(function()
                             ReplicatedStorage.springhit:FireServer(torso)
@@ -903,7 +916,8 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的彈簧精通腳本 v1.2 已載入!")
+print("貓玲的彈簧精通腳本 v1.3 已載入!")
 print("主要改進:")
 print("1. 死後回場: 等死亡4秒 → Teleport1 → 0.1秒 → 幫助目標位置")
 print("2. 幫助者現在會面向與目標相同的方向")
+print("3. 自動攻擊跳躍: 確保落地後才能再次跳躍,避免強行跳躍")
