@@ -23,6 +23,7 @@ local toggles = {
 
 local values = {
     attackInterval = 0.8,
+    attackDistance = 15,  -- 攻擊距離
     jumpPower = 50,
     helpDistance = 5,
     targetPlayer = nil,
@@ -396,6 +397,50 @@ attackIntervalDisplay.TextColor3 = Color3.fromRGB(100, 100, 100)
 attackIntervalDisplay.Parent = attackIntervalFrame
 Instance.new("UICorner", attackIntervalDisplay).CornerRadius = UDim.new(0, 5)
 
+-- 攻擊距離設定
+local attackDistanceFrame = Instance.new("Frame")
+attackDistanceFrame.Size = UDim2.new(1, 0, 0, 32)
+attackDistanceFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+attackDistanceFrame.LayoutOrder = 2.5
+attackDistanceFrame.Parent = page1
+Instance.new("UICorner", attackDistanceFrame).CornerRadius = UDim.new(0, 6)
+
+local attackDistanceLabel = Instance.new("TextLabel")
+attackDistanceLabel.Size = UDim2.new(0, 85, 1, 0)
+attackDistanceLabel.Position = UDim2.new(0, 6, 0, 0)
+attackDistanceLabel.BackgroundTransparency = 1
+attackDistanceLabel.Text = "攻擊距離:"
+attackDistanceLabel.TextSize = 12
+attackDistanceLabel.Font = Enum.Font.GothamBold
+attackDistanceLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+attackDistanceLabel.TextXAlignment = Enum.TextXAlignment.Left
+attackDistanceLabel.Parent = attackDistanceFrame
+
+local attackDistanceInput = Instance.new("TextBox")
+attackDistanceInput.Size = UDim2.new(0, 100, 0, 22)
+attackDistanceInput.Position = UDim2.new(0, 90, 0, 5)
+attackDistanceInput.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+attackDistanceInput.BorderSizePixel = 1
+attackDistanceInput.BorderColor3 = Color3.fromRGB(221, 221, 221)
+attackDistanceInput.Text = "15"
+attackDistanceInput.PlaceholderText = "單位"
+attackDistanceInput.TextSize = 12
+attackDistanceInput.Font = Enum.Font.Gotham
+attackDistanceInput.TextColor3 = Color3.fromRGB(50, 50, 50)
+attackDistanceInput.Parent = attackDistanceFrame
+Instance.new("UICorner", attackDistanceInput).CornerRadius = UDim.new(0, 5)
+
+local attackDistanceUnit = Instance.new("TextLabel")
+attackDistanceUnit.Size = UDim2.new(0, 30, 0, 22)
+attackDistanceUnit.Position = UDim2.new(0, 195, 0, 5)
+attackDistanceUnit.BackgroundTransparency = 1
+attackDistanceUnit.Text = "單位"
+attackDistanceUnit.TextSize = 12
+attackDistanceUnit.Font = Enum.Font.Gotham
+attackDistanceUnit.TextColor3 = Color3.fromRGB(100, 100, 100)
+attackDistanceUnit.TextXAlignment = Enum.TextXAlignment.Left
+attackDistanceUnit.Parent = attackDistanceFrame
+
 local jumpPowerFrame, jumpPowerInput, jumpPowerButton = createControlRow(page1, "跳躍力:", "50", "50", true, 3)
 
 -- 頁面2:幫助者
@@ -547,7 +592,7 @@ local function toggleUIState(btn, frame, input, isActive)
     updateStatus()
 end
 
--- 自動攻擊 (修改版: 跳起→下落0.2秒後攻擊)
+-- 自動攻擊 (修改版: 跳起→下落0.2秒後攻擊 + 距離檢測)
 autoAttackButton.MouseButton1Click:Connect(function()
     toggles.autoAttack = not toggles.autoAttack
     
@@ -578,6 +623,9 @@ autoAttackButton.MouseButton1Click:Connect(function()
                             local currentState = hum:GetState()
                             local velocity = hrp.AssemblyLinearVelocity
                             
+                            -- 計算與目標的距離
+                            local distance = (hrp.Position - torso.Position).Magnitude
+                            
                             -- 檢測跳躍狀態
                             if currentState == Enum.HumanoidStateType.Jumping then
                                 isJumping = true
@@ -594,9 +642,10 @@ autoAttackButton.MouseButton1Click:Connect(function()
                                     fallStartTime = now
                                 end
                                 
-                                -- 下落0.2秒後且未攻擊過,執行攻擊
+                                -- 下落0.2秒後、距離小於攻擊距離且未攻擊過,執行攻擊
                                 if isFalling and not hasAttackedThisFall 
-                                   and (now - fallStartTime) >= 0.2 then
+                                   and (now - fallStartTime) >= 0.2
+                                   and distance <= values.attackDistance then
                                     pcall(function()
                                         ReplicatedStorage.springhit:FireServer(torso)
                                     end)
@@ -686,6 +735,16 @@ jumpPowerButton.MouseButton1Click:Connect(function()
     end
     
     toggleUIState(jumpPowerButton, jumpPowerFrame, jumpPowerInput, toggles.jumpPower)
+end)
+
+-- 攻擊距離
+attackDistanceInput.FocusLost:Connect(function()
+    local val = tonumber(attackDistanceInput.Text)
+    if val and val > 0 then
+        values.attackDistance = val
+    else
+        attackDistanceInput.Text = tostring(values.attackDistance)
+    end
 end)
 
 -- 幫助目標
@@ -1047,9 +1106,10 @@ end)
 
 print("貓玲的彈簧精通腳本 v1.5 (修改版) 已載入!")
 print("主要改進:")
-print("1. 自動攻擊: 跳起→正在下落時0.2秒後自動觸發攻擊")
-print("2. 攻擊間隔: 改為固定顯示'已設定',不可編輯")
-print("3. 死後回場: 等死亡4秒 → Teleport1 → 0.1秒 → 幫助目標位置")
-print("4. 幫助者現在會面向與目標相同的方向")
-print("5. 傳送後固定: 預設開啟,傳送到目標位置後會固定,不隨目標移動")
-print("6. 死後回場支持固定模式: 重生後會回到固定位置")
+print("1. 自動攻擊: 跳起→正在下落時0.2秒後且距離≤攻擊距離時自動觸發攻擊")
+print("2. 攻擊距離: 可自訂攻擊距離,預設15單位")
+print("3. 攻擊間隔: 改為固定顯示'已設定',不可編輯")
+print("4. 死後回場: 等死亡4秒 → Teleport1 → 0.1秒 → 幫助目標位置")
+print("5. 幫助者現在會面向與目標相同的方向")
+print("6. 傳送後固定: 預設開啟,傳送到目標位置後會固定,不隨目標移動")
+print("7. 死後回場支持固定模式: 重生後會回到固定位置")
