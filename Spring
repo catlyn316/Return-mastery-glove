@@ -1,4 +1,4 @@
--- 貓玲的彈簧精通腳本 v1.1
+-- 貓玲的彈簧精通腳本 v1.2
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -149,11 +149,16 @@ local function getPositionInFrontOfPlayer(targetPlayer, distance)
     local targetHRP = targetChar:FindFirstChild("HumanoidRootPart")
     if not targetHRP then return nil end
     
+    -- 獲取目標的朝向
     local lookVector = targetHRP.CFrame.LookVector
     local targetPos = targetHRP.Position
     local frontPosition = targetPos + (lookVector * distance)
     
-    return CFrame.new(frontPosition, targetPos)
+    -- 創建一個與目標面向相同方向的CFrame
+    -- 使用目標的LookVector作為幫助者的朝向
+    local helpCFrame = CFrame.new(frontPosition, frontPosition + lookVector)
+    
+    return helpCFrame
 end
 
 -- UI 建構
@@ -345,10 +350,10 @@ local function createControlRow(parent, labelText, placeholder, defaultVal, isIn
     return frame, input, btn
 end
 
--- 頁面1：攻擊者
+-- 頁面1:攻擊者
 local autoAttackFrame, autoAttackStatus, autoAttackButton = createControlRow(page1, "自動攻擊:", "", "", false, 1)
 
--- 攻擊間隔（純數值設定）
+-- 攻擊間隔(純數值設定)
 local attackIntervalFrame = Instance.new("Frame")
 attackIntervalFrame.Size = UDim2.new(1, 0, 0, 32)
 attackIntervalFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
@@ -394,7 +399,7 @@ attackIntervalUnit.Parent = attackIntervalFrame
 
 local jumpPowerFrame, jumpPowerInput, jumpPowerButton = createControlRow(page1, "跳躍力:", "50", "50", true, 3)
 
--- 頁面2：幫助者
+-- 頁面2:幫助者
 local helpTargetFrame = Instance.new("Frame")
 helpTargetFrame.Size = UDim2.new(1, 0, 0, 68)
 helpTargetFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
@@ -450,7 +455,7 @@ helpTargetInfo.TextXAlignment = Enum.TextXAlignment.Left
 helpTargetInfo.TextWrapped = true
 helpTargetInfo.Parent = helpTargetFrame
 
--- 設定距離（純數值設定）
+-- 設定距離(純數值設定)
 local helpDistanceFrame = Instance.new("Frame")
 helpDistanceFrame.Size = UDim2.new(1, 0, 0, 32)
 helpDistanceFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
@@ -701,7 +706,7 @@ helpDistanceInput.FocusLost:Connect(function()
     end
 end)
 
--- 死後回場
+-- 死後回場 (改進版本)
 respawnTeleportButton.MouseButton1Click:Connect(function()
     toggles.respawnTeleport = not toggles.respawnTeleport
     
@@ -709,73 +714,66 @@ respawnTeleportButton.MouseButton1Click:Connect(function()
         respawnTeleportStatus.Text = "監控中"
         respawnTeleportStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
         
-        connections.respawnTeleport = player.CharacterAdded:Connect(function(newChar)
-            if not toggles.respawnTeleport then return end
-            
-            -- 等待角色完全加載
-            local humanoid = newChar:WaitForChild("Humanoid", 10)
-            local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
-            
-            if not humanoid or not hrp then return end
-            
-            -- 等待健康狀態正常
-            if humanoid.Health <= 0 then
-                humanoid.HealthChanged:Wait()
-            end
-            
-            -- 額外等待確保完全重生
-            task.wait(1)
-            
-            if not toggles.respawnTeleport then return end
-            
-            -- 傳送到 Teleport1
-            teleportToLobby()
-            
-            task.wait(1)
-            
-            if not toggles.respawnTeleport then return end
-            
-            -- 如果幫助目標還在運行，嘗試跟隨
-            if toggles.helpTarget and values.targetPlayer then
-                -- 先嘗試傳送到目標
-                local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
-                if targetCFrame and hrp then
-                    hrp.CFrame = targetCFrame
-                    
-                    -- 等待一下檢查 isInArena
-                    task.wait(0.5)
-                    
-                    -- 檢查自己的 isInArena 狀態
-                    local myCharInWorkspace = Workspace:FindFirstChild(player.Name)
-                    if myCharInWorkspace then
-                        local isInArena = myCharInWorkspace:FindFirstChild("isInArena")
+        -- 監控死亡的函數
+        local function startDeathMonitor()
+            local deathConnection
+            deathConnection = RunService.Heartbeat:Connect(function()
+                if not toggles.respawnTeleport then 
+                    if deathConnection then deathConnection:Disconnect() end
+                    return 
+                end
+                
+                local char = player.Character
+                if char and char:FindFirstChild("Humanoid") then
+                    local hum = char.Humanoid
+                    if hum.Health <= 0 then
+                        -- 角色死亡,暫停監控避免重複觸發
+                        deathConnection:Disconnect()
                         
-                        -- 如果不在競技場，回到 Teleport1
-                        if not isInArena or not isInArena.Value then
-                            task.wait(0.5)
-                            teleportToLobby()
-                        end
+                        -- 啟動死後回場流程
+                        task.spawn(function()
+                            -- 等待4秒
+                            task.wait(4)
+                            
+                            if not toggles.respawnTeleport then return end
+                            
+                            -- 確保角色已重生
+                            local newChar = player.Character
+                            if newChar and newChar:FindFirstChild("HumanoidRootPart") then
+                                -- 步驟1: 傳送到 Teleport1
+                                teleportToLobby()
+                                print("已傳送到Teleport1")
+                                
+                                -- 等待0.1秒
+                                task.wait(0.1)
+                                
+                                if not toggles.respawnTeleport then return end
+                                
+                                -- 步驟2: 如果幫助目標還在運行,傳送到目標位置
+                                if toggles.helpTarget and values.targetPlayer then
+                                    local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                                    if targetCFrame and newChar:FindFirstChild("HumanoidRootPart") then
+                                        newChar.HumanoidRootPart.CFrame = targetCFrame
+                                        print("已傳送到幫助目標位置")
+                                    end
+                                end
+                            end
+                            
+                            -- 重新啟動監控
+                            if toggles.respawnTeleport then
+                                task.wait(0.5)
+                                startDeathMonitor()
+                            end
+                        end)
                     end
                 end
-                
-                -- 重新建立跟隨連接
-                if connections.helpTarget then
-                    connections.helpTarget:Disconnect()
-                end
-                
-                connections.helpTarget = RunService.Heartbeat:Connect(function()
-                    if not toggles.helpTarget or not values.targetPlayer then return end
-                    
-                    local myChar = player.Character
-                    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
-                    
-                    local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
-                    if targetCFrame then
-                        myChar.HumanoidRootPart.CFrame = targetCFrame
-                    end
-                end)
-            end
-        end)
+            end)
+            
+            connections.respawnTeleport = deathConnection
+        end
+        
+        -- 啟動監控
+        startDeathMonitor()
     else
         respawnTeleportStatus.Text = "關閉"
         respawnTeleportStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
@@ -905,4 +903,7 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的彈簧精通腳本已載入！")
+print("貓玲的彈簧精通腳本 v1.2 已載入!")
+print("主要改進:")
+print("1. 死後回場: 等死亡4秒 → Teleport1 → 0.1秒 → 幫助目標位置")
+print("2. 幫助者現在會面向與目標相同的方向")
