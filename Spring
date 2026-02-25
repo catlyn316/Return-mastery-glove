@@ -1,4 +1,4 @@
--- 貓玲的彈簧精通腳本 v1.0
+-- 貓玲的彈簧精通腳本 v1.1
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -23,7 +23,7 @@ local toggles = {
 local values = {
     attackInterval = 0.8,
     jumpPower = 50,
-    helpDistance = 7,
+    helpDistance = 5,
     targetPlayer = nil
 }
 
@@ -475,7 +475,7 @@ helpDistanceInput.Position = UDim2.new(0, 90, 0, 5)
 helpDistanceInput.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 helpDistanceInput.BorderSizePixel = 1
 helpDistanceInput.BorderColor3 = Color3.fromRGB(221, 221, 221)
-helpDistanceInput.Text = "7"
+helpDistanceInput.Text = "5"
 helpDistanceInput.PlaceholderText = "格"
 helpDistanceInput.TextSize = 12
 helpDistanceInput.Font = Enum.Font.Gotham
@@ -712,31 +712,68 @@ respawnTeleportButton.MouseButton1Click:Connect(function()
         connections.respawnTeleport = player.CharacterAdded:Connect(function(newChar)
             if not toggles.respawnTeleport then return end
             
-            task.wait(4)
+            -- 等待角色完全加載
+            local humanoid = newChar:WaitForChild("Humanoid", 10)
+            local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
             
-            if toggles.respawnTeleport then
-                teleportToLobby()
-                
-                task.wait(1)
-                
-                -- 如果幫助目標還在運行，繼續跟隨
-                if toggles.helpTarget and values.targetPlayer then
-                    if connections.helpTarget then
-                        connections.helpTarget:Disconnect()
-                    end
+            if not humanoid or not hrp then return end
+            
+            -- 等待健康狀態正常
+            if humanoid.Health <= 0 then
+                humanoid.HealthChanged:Wait()
+            end
+            
+            -- 額外等待確保完全重生
+            task.wait(1)
+            
+            if not toggles.respawnTeleport then return end
+            
+            -- 傳送到 Teleport1
+            teleportToLobby()
+            
+            task.wait(1)
+            
+            if not toggles.respawnTeleport then return end
+            
+            -- 如果幫助目標還在運行，嘗試跟隨
+            if toggles.helpTarget and values.targetPlayer then
+                -- 先嘗試傳送到目標
+                local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                if targetCFrame and hrp then
+                    hrp.CFrame = targetCFrame
                     
-                    connections.helpTarget = RunService.Heartbeat:Connect(function()
-                        if not toggles.helpTarget or not values.targetPlayer then return end
+                    -- 等待一下檢查 isInArena
+                    task.wait(0.5)
+                    
+                    -- 檢查自己的 isInArena 狀態
+                    local myCharInWorkspace = Workspace:FindFirstChild(player.Name)
+                    if myCharInWorkspace then
+                        local isInArena = myCharInWorkspace:FindFirstChild("isInArena")
                         
-                        local myChar = player.Character
-                        if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
-                        
-                        local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
-                        if targetCFrame then
-                            myChar.HumanoidRootPart.CFrame = targetCFrame
+                        -- 如果不在競技場，回到 Teleport1
+                        if not isInArena or not isInArena.Value then
+                            task.wait(0.5)
+                            teleportToLobby()
                         end
-                    end)
+                    end
                 end
+                
+                -- 重新建立跟隨連接
+                if connections.helpTarget then
+                    connections.helpTarget:Disconnect()
+                end
+                
+                connections.helpTarget = RunService.Heartbeat:Connect(function()
+                    if not toggles.helpTarget or not values.targetPlayer then return end
+                    
+                    local myChar = player.Character
+                    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+                    
+                    local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                    if targetCFrame then
+                        myChar.HumanoidRootPart.CFrame = targetCFrame
+                    end
+                end)
             end
         end)
     else
