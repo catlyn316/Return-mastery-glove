@@ -1,4 +1,4 @@
--- 貓玲的彈簧精通腳本 v1.3
+-- 貓玲的彈簧精通腳本 v1.5
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -17,14 +17,16 @@ local toggles = {
     autoAttack = false,
     jumpPower = false,
     helpTarget = false,
-    respawnTeleport = false
+    respawnTeleport = false,
+    fixedPosition = true  -- 傳送後固定,預設開啟
 }
 
 local values = {
     attackInterval = 0.8,
     jumpPower = 50,
     helpDistance = 5,
-    targetPlayer = nil
+    targetPlayer = nil,
+    fixedCFrame = nil  -- 儲存固定位置
 }
 
 local originalJumpPower = 50
@@ -32,7 +34,8 @@ local connections = {
     autoAttack = nil,
     jumpPower = nil,
     helpTarget = nil,
-    respawnTeleport = nil
+    respawnTeleport = nil,
+    fixedPosition = nil
 }
 
 -- 輔助函數
@@ -55,6 +58,14 @@ local function isOnGround()
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
+    
+    -- 檢查 Humanoid 狀態
+    local state = hum:GetState()
+    if state ~= Enum.HumanoidStateType.Running 
+       and state ~= Enum.HumanoidStateType.RunningNoPhysics 
+       and state ~= Enum.HumanoidStateType.Landed then
+        return false
+    end
     
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
@@ -499,7 +510,9 @@ helpDistanceUnit.TextColor3 = Color3.fromRGB(100, 100, 100)
 helpDistanceUnit.TextXAlignment = Enum.TextXAlignment.Left
 helpDistanceUnit.Parent = helpDistanceFrame
 
-local respawnTeleportFrame, respawnTeleportStatus, respawnTeleportButton = createControlRow(page2, "死後回場:", "", "", false, 3)
+local fixedPositionFrame, fixedPositionStatus, fixedPositionButton = createControlRow(page2, "傳送後固定:", "", "", false, 3)
+
+local respawnTeleportFrame, respawnTeleportStatus, respawnTeleportButton = createControlRow(page2, "死後回場:", "", "", false, 4)
 
 -- 狀態標籤
 local statusLabel = Instance.new("TextLabel")
@@ -556,7 +569,8 @@ autoAttackButton.MouseButton1Click:Connect(function()
         
         local lastAttack = 0
         local lastJumpTime = 0
-        local jumpCooldown = 0.5  -- 跳躍冷卻時間
+        local jumpCooldown = 1.0  -- 增加跳躍冷卻時間到1秒
+        local isJumping = false    -- 跳躍狀態標記
         
         connections.autoAttack = RunService.Heartbeat:Connect(function()
             local target = getNearestPlayer()
@@ -564,15 +578,34 @@ autoAttackButton.MouseButton1Click:Connect(function()
                 local torso = target.Character:FindFirstChild("Torso")
                 if torso then
                     local now = tick()
+                    local char = player.Character
                     
-                    -- 跳躍 (確保落地後才能再次跳躍)
-                    if isOnGround() and (now - lastJumpTime) >= jumpCooldown then
-                        local char = player.Character
-                        if char then
-                            local hum = char:FindFirstChildOfClass("Humanoid")
-                            if hum then
+                    if char then
+                        local hum = char:FindFirstChildOfClass("Humanoid")
+                        if hum then
+                            -- 監控跳躍狀態
+                            local currentState = hum:GetState()
+                            
+                            -- 如果正在跳躍或在空中,標記為跳躍中
+                            if currentState == Enum.HumanoidStateType.Jumping 
+                               or currentState == Enum.HumanoidStateType.Freefall then
+                                isJumping = true
+                            end
+                            
+                            -- 如果落地了,重置跳躍狀態
+                            if currentState == Enum.HumanoidStateType.Landed 
+                               or currentState == Enum.HumanoidStateType.Running 
+                               or currentState == Enum.HumanoidStateType.RunningNoPhysics then
+                                isJumping = false
+                            end
+                            
+                            -- 只有在完全落地、不在跳躍狀態、且冷卻結束後才允許跳躍
+                            if not isJumping 
+                               and isOnGround() 
+                               and (now - lastJumpTime) >= jumpCooldown then
                                 hum:ChangeState(Enum.HumanoidStateType.Jumping)
                                 lastJumpTime = now
+                                isJumping = true  -- 立即標記為跳躍中
                             end
                         end
                     end
@@ -681,24 +714,50 @@ helpTargetButton.MouseButton1Click:Connect(function()
         -- 先傳送到 Lobby
         teleportToLobby()
         
-        -- 等待1秒後開始跟隨
+        -- 等待1秒後傳送到目標位置
         task.wait(1)
         
-        connections.helpTarget = RunService.Heartbeat:Connect(function()
-            if not toggles.helpTarget or not values.targetPlayer then return end
-            
+        -- 獲取目標位置並傳送
+        local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+        if targetCFrame then
             local myChar = player.Character
-            if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
-            
-            local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
-            if targetCFrame then
+            if myChar and myChar:FindFirstChild("HumanoidRootPart") then
                 myChar.HumanoidRootPart.CFrame = targetCFrame
+                
+                -- 如果開啟固定模式,記錄當前位置
+                if toggles.fixedPosition then
+                    values.fixedCFrame = targetCFrame
+                    
+                    -- 建立固定位置的連接
+                    connections.helpTarget = RunService.Heartbeat:Connect(function()
+                        if not toggles.helpTarget then return end
+                        
+                        local myChar = player.Character
+                        if myChar and myChar:FindFirstChild("HumanoidRootPart") and values.fixedCFrame then
+                            myChar.HumanoidRootPart.CFrame = values.fixedCFrame
+                        end
+                    end)
+                else
+                    -- 非固定模式,跟隨目標移動
+                    connections.helpTarget = RunService.Heartbeat:Connect(function()
+                        if not toggles.helpTarget or not values.targetPlayer then return end
+                        
+                        local myChar = player.Character
+                        if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+                        
+                        local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                        if targetCFrame then
+                            myChar.HumanoidRootPart.CFrame = targetCFrame
+                        end
+                    end)
+                end
             end
-        end)
+        end
     else
         helpTargetInfo.Text = "目標: 無"
         helpTargetInfo.TextColor3 = Color3.fromRGB(120, 120, 120)
         values.targetPlayer = nil
+        values.fixedCFrame = nil
         
         if connections.helpTarget then
             connections.helpTarget:Disconnect()
@@ -718,6 +777,74 @@ helpDistanceInput.FocusLost:Connect(function()
         helpDistanceInput.Text = tostring(values.helpDistance)
     end
 end)
+
+-- 傳送後固定 (預設開啟)
+fixedPositionButton.MouseButton1Click:Connect(function()
+    toggles.fixedPosition = not toggles.fixedPosition
+    
+    if toggles.fixedPosition then
+        fixedPositionStatus.Text = "啟用"
+        fixedPositionStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
+        
+        -- 如果幫助目標正在運行,切換到固定模式
+        if toggles.helpTarget and values.targetPlayer then
+            -- 斷開舊連接
+            if connections.helpTarget then
+                connections.helpTarget:Disconnect()
+            end
+            
+            -- 獲取當前位置或目標位置
+            local myChar = player.Character
+            if myChar and myChar:FindFirstChild("HumanoidRootPart") then
+                if not values.fixedCFrame then
+                    values.fixedCFrame = myChar.HumanoidRootPart.CFrame
+                end
+                
+                -- 建立固定位置連接
+                connections.helpTarget = RunService.Heartbeat:Connect(function()
+                    if not toggles.helpTarget then return end
+                    
+                    local myChar = player.Character
+                    if myChar and myChar:FindFirstChild("HumanoidRootPart") and values.fixedCFrame then
+                        myChar.HumanoidRootPart.CFrame = values.fixedCFrame
+                    end
+                end)
+            end
+        end
+    else
+        fixedPositionStatus.Text = "關閉"
+        fixedPositionStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+        values.fixedCFrame = nil
+        
+        -- 如果幫助目標正在運行,切換到跟隨模式
+        if toggles.helpTarget and values.targetPlayer then
+            -- 斷開舊連接
+            if connections.helpTarget then
+                connections.helpTarget:Disconnect()
+            end
+            
+            -- 建立跟隨連接
+            connections.helpTarget = RunService.Heartbeat:Connect(function()
+                if not toggles.helpTarget or not values.targetPlayer then return end
+                
+                local myChar = player.Character
+                if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+                
+                local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                if targetCFrame then
+                    myChar.HumanoidRootPart.CFrame = targetCFrame
+                end
+            end)
+        end
+    end
+    
+    toggleUIState(fixedPositionButton, fixedPositionFrame, fixedPositionStatus, toggles.fixedPosition)
+end)
+
+-- 初始化固定位置按鈕為開啟狀態
+fixedPositionStatus.Text = "啟用"
+fixedPositionStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
+toggleUIState(fixedPositionButton, fixedPositionFrame, fixedPositionStatus, true)
 
 -- 死後回場 (改進版本)
 respawnTeleportButton.MouseButton1Click:Connect(function()
@@ -762,12 +889,19 @@ respawnTeleportButton.MouseButton1Click:Connect(function()
                                 
                                 if not toggles.respawnTeleport then return end
                                 
-                                -- 步驟2: 如果幫助目標還在運行,傳送到目標位置
+                                -- 步驟2: 如果幫助目標還在運行,傳送到對應位置
                                 if toggles.helpTarget and values.targetPlayer then
-                                    local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
-                                    if targetCFrame and newChar:FindFirstChild("HumanoidRootPart") then
-                                        newChar.HumanoidRootPart.CFrame = targetCFrame
-                                        print("已傳送到幫助目標位置")
+                                    if toggles.fixedPosition and values.fixedCFrame then
+                                        -- 固定模式: 傳送到固定位置
+                                        newChar.HumanoidRootPart.CFrame = values.fixedCFrame
+                                        print("已傳送到固定位置")
+                                    else
+                                        -- 跟隨模式: 傳送到目標當前位置
+                                        local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                                        if targetCFrame and newChar:FindFirstChild("HumanoidRootPart") then
+                                            newChar.HumanoidRootPart.CFrame = targetCFrame
+                                            print("已傳送到幫助目標位置")
+                                        end
                                     end
                                 end
                             end
@@ -916,8 +1050,11 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的彈簧精通腳本 v1.3 已載入!")
+print("貓玲的彈簧精通腳本 v1.5 已載入!")
 print("主要改進:")
 print("1. 死後回場: 等死亡4秒 → Teleport1 → 0.1秒 → 幫助目標位置")
 print("2. 幫助者現在會面向與目標相同的方向")
-print("3. 自動攻擊跳躍: 確保落地後才能再次跳躍,避免強行跳躍")
+print("3. 自動攻擊跳躍: 確保落地後才能再次跳躍")
+print("4. 防無限跳偵測: 增加狀態檢查和跳躍冷卻(1秒),避免被偵測")
+print("5. 傳送後固定: 預設開啟,傳送到目標位置後會固定,不隨目標移動")
+print("6. 死後回場支持固定模式: 重生後會回到固定位置")
