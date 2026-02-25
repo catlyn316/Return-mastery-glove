@@ -1,4 +1,4 @@
--- 貓玲的彈簧精通腳本 v1.5 (修改版)
+-- 貓玲的彈簧精通腳本 v1.7
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -384,18 +384,30 @@ attackIntervalLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
 attackIntervalLabel.TextXAlignment = Enum.TextXAlignment.Left
 attackIntervalLabel.Parent = attackIntervalFrame
 
-local attackIntervalDisplay = Instance.new("TextLabel")
-attackIntervalDisplay.Size = UDim2.new(0, 135, 0, 22)
-attackIntervalDisplay.Position = UDim2.new(0, 90, 0, 5)
-attackIntervalDisplay.BackgroundColor3 = Color3.fromRGB(240, 240, 240)
-attackIntervalDisplay.BorderSizePixel = 1
-attackIntervalDisplay.BorderColor3 = Color3.fromRGB(221, 221, 221)
-attackIntervalDisplay.Text = "已設定"
-attackIntervalDisplay.TextSize = 12
-attackIntervalDisplay.Font = Enum.Font.Gotham
-attackIntervalDisplay.TextColor3 = Color3.fromRGB(100, 100, 100)
-attackIntervalDisplay.Parent = attackIntervalFrame
-Instance.new("UICorner", attackIntervalDisplay).CornerRadius = UDim.new(0, 5)
+local attackIntervalInput = Instance.new("TextBox")
+attackIntervalInput.Size = UDim2.new(0, 100, 0, 22)
+attackIntervalInput.Position = UDim2.new(0, 90, 0, 5)
+attackIntervalInput.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+attackIntervalInput.BorderSizePixel = 1
+attackIntervalInput.BorderColor3 = Color3.fromRGB(221, 221, 221)
+attackIntervalInput.Text = "0.8"
+attackIntervalInput.PlaceholderText = "秒"
+attackIntervalInput.TextSize = 12
+attackIntervalInput.Font = Enum.Font.Gotham
+attackIntervalInput.TextColor3 = Color3.fromRGB(50, 50, 50)
+attackIntervalInput.Parent = attackIntervalFrame
+Instance.new("UICorner", attackIntervalInput).CornerRadius = UDim.new(0, 5)
+
+local attackIntervalUnit = Instance.new("TextLabel")
+attackIntervalUnit.Size = UDim2.new(0, 30, 0, 22)
+attackIntervalUnit.Position = UDim2.new(0, 195, 0, 5)
+attackIntervalUnit.BackgroundTransparency = 1
+attackIntervalUnit.Text = "秒"
+attackIntervalUnit.TextSize = 12
+attackIntervalUnit.Font = Enum.Font.Gotham
+attackIntervalUnit.TextColor3 = Color3.fromRGB(100, 100, 100)
+attackIntervalUnit.TextXAlignment = Enum.TextXAlignment.Left
+attackIntervalUnit.Parent = attackIntervalFrame
 
 -- 攻擊距離設定
 local attackDistanceFrame = Instance.new("Frame")
@@ -592,7 +604,7 @@ local function toggleUIState(btn, frame, input, isActive)
     updateStatus()
 end
 
--- 自動攻擊 (修改版: 跳起→下落0.2秒後攻擊 + 距離檢測)
+-- 自動攻擊 (完整版: 邊跳邊打模式 - 使用真實跳躍)
 autoAttackButton.MouseButton1Click:Connect(function()
     toggles.autoAttack = not toggles.autoAttack
     
@@ -601,11 +613,9 @@ autoAttackButton.MouseButton1Click:Connect(function()
         autoAttackStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
         
         local lastJumpTime = 0
+        local lastAttackTime = 0
         local jumpCooldown = 1.0
         local isJumping = false
-        local isFalling = false
-        local fallStartTime = 0
-        local hasAttackedThisFall = false
         
         connections.autoAttack = RunService.Heartbeat:Connect(function()
             local target = getNearestPlayer()
@@ -621,36 +631,14 @@ autoAttackButton.MouseButton1Click:Connect(function()
                         
                         if hum and hrp then
                             local currentState = hum:GetState()
-                            local velocity = hrp.AssemblyLinearVelocity
                             
                             -- 計算與目標的距離
                             local distance = (hrp.Position - torso.Position).Magnitude
                             
                             -- 檢測跳躍狀態
-                            if currentState == Enum.HumanoidStateType.Jumping then
+                            if currentState == Enum.HumanoidStateType.Jumping 
+                               or currentState == Enum.HumanoidStateType.Freefall then
                                 isJumping = true
-                                isFalling = false
-                                hasAttackedThisFall = false
-                            end
-                            
-                            -- 檢測下落狀態 (Y軸速度為負且在空中)
-                            if (currentState == Enum.HumanoidStateType.Freefall or isJumping) 
-                               and velocity.Y < -5 then
-                                if not isFalling then
-                                    -- 剛開始下落
-                                    isFalling = true
-                                    fallStartTime = now
-                                end
-                                
-                                -- 下落0.2秒後、距離小於攻擊距離且未攻擊過,執行攻擊
-                                if isFalling and not hasAttackedThisFall 
-                                   and (now - fallStartTime) >= 0.2
-                                   and distance <= values.attackDistance then
-                                    pcall(function()
-                                        ReplicatedStorage.springhit:FireServer(torso)
-                                    end)
-                                    hasAttackedThisFall = true
-                                end
                             end
                             
                             -- 落地後重置狀態
@@ -658,16 +646,23 @@ autoAttackButton.MouseButton1Click:Connect(function()
                                or currentState == Enum.HumanoidStateType.Running 
                                or currentState == Enum.HumanoidStateType.RunningNoPhysics then
                                 isJumping = false
-                                isFalling = false
                             end
                             
                             -- 跳躍邏輯: 在地面且冷卻完成
                             if not isJumping 
                                and isOnGround() 
                                and (now - lastJumpTime) >= jumpCooldown then
-                                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                                hum.Jump = true
                                 lastJumpTime = now
-                                isJumping = true
+                            end
+                            
+                            -- 攻擊邏輯: 按攻擊間隔持續攻擊
+                            if distance <= values.attackDistance 
+                               and (now - lastAttackTime) >= values.attackInterval then
+                                pcall(function()
+                                    ReplicatedStorage.springhit:FireServer(torso)
+                                end)
+                                lastAttackTime = now
                             end
                         end
                     end
@@ -684,6 +679,16 @@ autoAttackButton.MouseButton1Click:Connect(function()
     end
     
     toggleUIState(autoAttackButton, autoAttackFrame, autoAttackStatus, toggles.autoAttack)
+end)
+
+-- 攻擊間隔
+attackIntervalInput.FocusLost:Connect(function()
+    local val = tonumber(attackIntervalInput.Text)
+    if val and val > 0 then
+        values.attackInterval = val
+    else
+        attackIntervalInput.Text = tostring(values.attackInterval)
+    end
 end)
 
 -- 跳躍力
@@ -1104,12 +1109,14 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的彈簧精通腳本 v1.5 (修改版) 已載入!")
+print("貓玲的彈簧精通腳本 v1.7 已載入!")
 print("主要改進:")
-print("1. 自動攻擊: 跳起→正在下落時0.2秒後且距離≤攻擊距離時自動觸發攻擊")
+print("1. 自動攻擊: 邊跳邊打模式 - 使用 hum.Jump = true 真實跳躍 + 按間隔持續攻擊")
 print("2. 攻擊距離: 可自訂攻擊距離,預設15單位")
-print("3. 攻擊間隔: 改為固定顯示'已設定',不可編輯")
+print("3. 攻擊間隔: 可自訂,預設0.8秒")
 print("4. 死後回場: 等死亡4秒 → Teleport1 → 0.1秒 → 幫助目標位置")
 print("5. 幫助者現在會面向與目標相同的方向")
 print("6. 傳送後固定: 預設開啟,傳送到目標位置後會固定,不隨目標移動")
 print("7. 死後回場支持固定模式: 重生後會回到固定位置")
+print("")
+print("✅ 已修復: 使用真實跳躍方式,攻擊現在會正確計算任務進度!")
