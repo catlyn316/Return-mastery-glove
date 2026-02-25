@@ -1,0 +1,871 @@
+-- 貓玲的彈簧精通腳本 v1.0
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- 清理舊GUI
+if CoreGui:FindFirstChild("SpringMasterUI") then CoreGui.SpringMasterUI:Destroy() end
+if playerGui:FindFirstChild("SpringMasterUI") then playerGui.SpringMasterUI:Destroy() end
+
+-- 變數
+local toggles = {
+    autoAttack = false,
+    jumpPower = false,
+    helpTarget = false,
+    respawnTeleport = false
+}
+
+local values = {
+    attackInterval = 0.8,
+    jumpPower = 50,
+    helpDistance = 7,
+    targetPlayer = nil
+}
+
+local originalJumpPower = 50
+local connections = {
+    autoAttack = nil,
+    jumpPower = nil,
+    helpTarget = nil,
+    respawnTeleport = nil
+}
+
+-- 輔助函數
+local function getOriginalJumpPower()
+    local char = player.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            if hum.UseJumpPower then
+                originalJumpPower = hum.JumpPower
+            else
+                originalJumpPower = hum.JumpHeight
+            end
+        end
+    end
+end
+
+local function isOnGround()
+    local char = player.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    -- 使用 Raycast 檢測是否在地面
+    local rayOrigin = hrp.Position
+    local rayDirection = Vector3.new(0, -5, 0)
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {char}
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local rayResult = Workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+    
+    return rayResult ~= nil
+end
+
+local function makeJump()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    
+    if isOnGround() then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end
+
+local function getNearestPlayer()
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+    
+    local myPos = char.HumanoidRootPart.Position
+    local nearest = nil
+    local minDist = math.huge
+    
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local dist = (p.Character.HumanoidRootPart.Position - myPos).Magnitude
+            if dist < minDist then
+                minDist = dist
+                nearest = p
+            end
+        end
+    end
+    
+    return nearest
+end
+
+local function findPlayerByPartialName(input)
+    if not input or input == "" then return nil, "請輸入玩家名稱" end
+    
+    input = input:lower()
+    local matches = {}
+    
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then
+            local userName = p.Name:lower()
+            local displayName = p.DisplayName:lower()
+            
+            if userName:sub(1, #input) == input or displayName:sub(1, #input) == input then
+                table.insert(matches, p)
+            end
+        end
+    end
+    
+    if #matches == 0 then
+        return nil, "找不到玩家"
+    elseif #matches == 1 then
+        return matches[1], nil
+    else
+        local names = {}
+        for _, p in ipairs(matches) do
+            table.insert(names, p.Name)
+        end
+        return nil, "找到多個玩家: " .. table.concat(names, ", ") .. "\n請輸入更多字元"
+    end
+end
+
+local function teleportToLobby()
+    pcall(function()
+        local part = Workspace:WaitForChild("Lobby", 5):FindFirstChild("Teleport1")
+        if part and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            player.Character.HumanoidRootPart.CFrame = part.CFrame + Vector3.new(0, 5, 0)
+        end
+    end)
+end
+
+local function getPositionInFrontOfPlayer(targetPlayer, distance)
+    if not targetPlayer or not targetPlayer.Character then return nil end
+    local targetChar = targetPlayer.Character
+    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then return nil end
+    
+    local lookVector = targetHRP.CFrame.LookVector
+    local targetPos = targetHRP.Position
+    local frontPosition = targetPos + (lookVector * distance)
+    
+    return CFrame.new(frontPosition, targetPos)
+end
+
+-- UI 建構
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "SpringMasterUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+screenGui.DisplayOrder = 10001
+
+local function parentUI(g)
+    local ok = pcall(function()
+        if gethui then g.Parent = gethui()
+        elseif CoreGui then g.Parent = CoreGui
+        else g.Parent = playerGui end
+    end)
+    if not ok then g.Parent = playerGui end
+end
+parentUI(screenGui)
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 280, 0, 280)
+mainFrame.Position = UDim2.new(0.5, -140, 0.5, -140)
+mainFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 32)
+titleBar.BackgroundColor3 = Color3.fromRGB(70, 180, 230)
+titleBar.Parent = mainFrame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -60, 1, 0)
+title.BackgroundTransparency = 1
+title.Text = "貓玲的彈簧精通腳本"
+title.TextSize = 14
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Parent = titleBar
+
+local minimizeButton = Instance.new("TextButton")
+minimizeButton.Size = UDim2.new(0, 24, 0, 24)
+minimizeButton.Position = UDim2.new(1, -54, 0, 4)
+minimizeButton.BackgroundColor3 = Color3.fromRGB(158, 158, 158)
+minimizeButton.Text = "─"
+minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+minimizeButton.Parent = titleBar
+Instance.new("UICorner", minimizeButton).CornerRadius = UDim.new(0, 5)
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.new(0, 24, 0, 24)
+closeButton.Position = UDim2.new(1, -28, 0, 4)
+closeButton.BackgroundColor3 = Color3.fromRGB(244, 67, 54)
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.Parent = titleBar
+Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 5)
+
+-- 分頁列
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(0.9, 0, 0, 28)
+tabBar.Position = UDim2.new(0.05, 0, 0, 38)
+tabBar.BackgroundColor3 = Color3.fromRGB(240, 240, 240)
+tabBar.Parent = mainFrame
+Instance.new("UICorner", tabBar).CornerRadius = UDim.new(0, 6)
+
+local function createTab(text, index)
+    local tab = Instance.new("TextButton")
+    tab.Size = UDim2.new(0.5, -4, 1, -4)
+    tab.Position = UDim2.new((index-1)*0.5, 2, 0, 2)
+    tab.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+    tab.Text = text
+    tab.TextSize = 12
+    tab.Font = Enum.Font.GothamBold
+    tab.TextColor3 = Color3.fromRGB(100, 100, 100)
+    tab.Parent = tabBar
+    Instance.new("UICorner", tab).CornerRadius = UDim.new(0, 4)
+    return tab
+end
+
+local tab1 = createTab("攻擊者", 1)
+local tab2 = createTab("幫助者", 2)
+
+local contentContainer = Instance.new("Frame")
+contentContainer.Size = UDim2.new(0.9, 0, 0, 180)
+contentContainer.Position = UDim2.new(0.05, 0, 0, 72)
+contentContainer.BackgroundTransparency = 1
+contentContainer.Parent = mainFrame
+contentContainer.ClipsDescendants = true
+
+local function createScrollingPage(parent)
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 4
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible = false
+    page.Parent = parent
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 6)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.Parent = page
+    local padding = Instance.new("UIPadding")
+    padding.PaddingRight = UDim.new(0, 6)
+    padding.Parent = page
+    return page
+end
+
+local page1 = createScrollingPage(contentContainer)
+local page2 = createScrollingPage(contentContainer)
+page1.Visible = true
+
+local function switchTab(n)
+    page1.Visible = (n == 1)
+    page2.Visible = (n == 2)
+    local tabs = {tab1, tab2}
+    for i, t in ipairs(tabs) do
+        t.BackgroundColor3 = (i == n) and Color3.fromRGB(70, 180, 230) or Color3.fromRGB(200, 200, 200)
+        t.TextColor3 = (i == n) and Color3.new(1, 1, 1) or Color3.fromRGB(100, 100, 100)
+    end
+end
+
+tab1.MouseButton1Click:Connect(function() switchTab(1) end)
+tab2.MouseButton1Click:Connect(function() switchTab(2) end)
+switchTab(1)
+
+local function createControlRow(parent, labelText, placeholder, defaultVal, isInput, order)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 32)
+    frame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+    frame.LayoutOrder = order or 0
+    frame.Parent = parent
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0, 85, 1, 0)
+    label.Position = UDim2.new(0, 6, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextSize = 12
+    label.Font = Enum.Font.GothamBold
+    label.TextColor3 = Color3.fromRGB(85, 85, 85)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+    
+    local input
+    if isInput then
+        input = Instance.new("TextBox")
+        input.Size = UDim2.new(0, 70, 0, 22)
+        input.Position = UDim2.new(0, 90, 0, 5)
+        input.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        input.BorderSizePixel = 1
+        input.BorderColor3 = Color3.fromRGB(221, 221, 221)
+        input.Text = defaultVal
+        input.PlaceholderText = placeholder
+        input.TextSize = 12
+        input.Font = Enum.Font.Gotham
+        input.TextColor3 = Color3.fromRGB(50, 50, 50)
+        input.Parent = frame
+        Instance.new("UICorner", input).CornerRadius = UDim.new(0, 5)
+    else
+        input = Instance.new("TextLabel")
+        input.Size = UDim2.new(0, 70, 0, 22)
+        input.Position = UDim2.new(0, 90, 0, 5)
+        input.BackgroundTransparency = 1
+        input.Text = "關閉"
+        input.TextSize = 12
+        input.Font = Enum.Font.Gotham
+        input.TextColor3 = Color3.fromRGB(150, 150, 150)
+        input.Parent = frame
+    end
+    
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 50, 0, 22)
+    btn.Position = UDim2.new(1, -55, 0, 5)
+    btn.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+    btn.Text = "啟動"
+    btn.TextSize = 12
+    btn.Font = Enum.Font.GothamBold
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Parent = frame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+    
+    return frame, input, btn
+end
+
+-- 頁面1：攻擊者
+local autoAttackFrame, autoAttackStatus, autoAttackButton = createControlRow(page1, "自動攻擊:", "", "", false, 1)
+
+-- 攻擊間隔（純數值設定）
+local attackIntervalFrame = Instance.new("Frame")
+attackIntervalFrame.Size = UDim2.new(1, 0, 0, 32)
+attackIntervalFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+attackIntervalFrame.LayoutOrder = 2
+attackIntervalFrame.Parent = page1
+Instance.new("UICorner", attackIntervalFrame).CornerRadius = UDim.new(0, 6)
+
+local attackIntervalLabel = Instance.new("TextLabel")
+attackIntervalLabel.Size = UDim2.new(0, 85, 1, 0)
+attackIntervalLabel.Position = UDim2.new(0, 6, 0, 0)
+attackIntervalLabel.BackgroundTransparency = 1
+attackIntervalLabel.Text = "攻擊間隔:"
+attackIntervalLabel.TextSize = 12
+attackIntervalLabel.Font = Enum.Font.GothamBold
+attackIntervalLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+attackIntervalLabel.TextXAlignment = Enum.TextXAlignment.Left
+attackIntervalLabel.Parent = attackIntervalFrame
+
+local attackIntervalInput = Instance.new("TextBox")
+attackIntervalInput.Size = UDim2.new(0, 100, 0, 22)
+attackIntervalInput.Position = UDim2.new(0, 90, 0, 5)
+attackIntervalInput.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+attackIntervalInput.BorderSizePixel = 1
+attackIntervalInput.BorderColor3 = Color3.fromRGB(221, 221, 221)
+attackIntervalInput.Text = "0.8"
+attackIntervalInput.PlaceholderText = "秒"
+attackIntervalInput.TextSize = 12
+attackIntervalInput.Font = Enum.Font.Gotham
+attackIntervalInput.TextColor3 = Color3.fromRGB(50, 50, 50)
+attackIntervalInput.Parent = attackIntervalFrame
+Instance.new("UICorner", attackIntervalInput).CornerRadius = UDim.new(0, 5)
+
+local attackIntervalUnit = Instance.new("TextLabel")
+attackIntervalUnit.Size = UDim2.new(0, 30, 0, 22)
+attackIntervalUnit.Position = UDim2.new(0, 195, 0, 5)
+attackIntervalUnit.BackgroundTransparency = 1
+attackIntervalUnit.Text = "秒"
+attackIntervalUnit.TextSize = 12
+attackIntervalUnit.Font = Enum.Font.Gotham
+attackIntervalUnit.TextColor3 = Color3.fromRGB(100, 100, 100)
+attackIntervalUnit.TextXAlignment = Enum.TextXAlignment.Left
+attackIntervalUnit.Parent = attackIntervalFrame
+
+local jumpPowerFrame, jumpPowerInput, jumpPowerButton = createControlRow(page1, "跳躍力:", "50", "50", true, 3)
+
+-- 頁面2：幫助者
+local helpTargetFrame = Instance.new("Frame")
+helpTargetFrame.Size = UDim2.new(1, 0, 0, 68)
+helpTargetFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+helpTargetFrame.LayoutOrder = 1
+helpTargetFrame.Parent = page2
+Instance.new("UICorner", helpTargetFrame).CornerRadius = UDim.new(0, 6)
+
+local helpTargetLabel = Instance.new("TextLabel")
+helpTargetLabel.Text = "幫助目標:"
+helpTargetLabel.Size = UDim2.new(0, 85, 0, 28)
+helpTargetLabel.Position = UDim2.new(0, 6, 0, 4)
+helpTargetLabel.BackgroundTransparency = 1
+helpTargetLabel.Font = Enum.Font.GothamBold
+helpTargetLabel.TextSize = 12
+helpTargetLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+helpTargetLabel.TextXAlignment = Enum.TextXAlignment.Left
+helpTargetLabel.Parent = helpTargetFrame
+
+local helpTargetInput = Instance.new("TextBox")
+helpTargetInput.Size = UDim2.new(0, 70, 0, 22)
+helpTargetInput.Position = UDim2.new(0, 90, 0, 7)
+helpTargetInput.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+helpTargetInput.BorderSizePixel = 1
+helpTargetInput.BorderColor3 = Color3.fromRGB(221, 221, 221)
+helpTargetInput.Text = ""
+helpTargetInput.PlaceholderText = "玩家名"
+helpTargetInput.TextSize = 12
+helpTargetInput.Font = Enum.Font.Gotham
+helpTargetInput.TextColor3 = Color3.fromRGB(50, 50, 50)
+helpTargetInput.Parent = helpTargetFrame
+Instance.new("UICorner", helpTargetInput).CornerRadius = UDim.new(0, 5)
+
+local helpTargetButton = Instance.new("TextButton")
+helpTargetButton.Size = UDim2.new(0, 50, 0, 22)
+helpTargetButton.Position = UDim2.new(1, -55, 0, 7)
+helpTargetButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+helpTargetButton.Text = "啟動"
+helpTargetButton.TextSize = 12
+helpTargetButton.Font = Enum.Font.GothamBold
+helpTargetButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+helpTargetButton.Parent = helpTargetFrame
+Instance.new("UICorner", helpTargetButton).CornerRadius = UDim.new(0, 5)
+
+local helpTargetInfo = Instance.new("TextLabel")
+helpTargetInfo.Size = UDim2.new(1, -12, 0, 30)
+helpTargetInfo.Position = UDim2.new(0, 6, 0, 34)
+helpTargetInfo.BackgroundTransparency = 1
+helpTargetInfo.Text = "目標: 無"
+helpTargetInfo.TextSize = 11
+helpTargetInfo.Font = Enum.Font.Gotham
+helpTargetInfo.TextColor3 = Color3.fromRGB(120, 120, 120)
+helpTargetInfo.TextXAlignment = Enum.TextXAlignment.Left
+helpTargetInfo.TextWrapped = true
+helpTargetInfo.Parent = helpTargetFrame
+
+-- 設定距離（純數值設定）
+local helpDistanceFrame = Instance.new("Frame")
+helpDistanceFrame.Size = UDim2.new(1, 0, 0, 32)
+helpDistanceFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+helpDistanceFrame.LayoutOrder = 2
+helpDistanceFrame.Parent = page2
+Instance.new("UICorner", helpDistanceFrame).CornerRadius = UDim.new(0, 6)
+
+local helpDistanceLabel = Instance.new("TextLabel")
+helpDistanceLabel.Size = UDim2.new(0, 85, 1, 0)
+helpDistanceLabel.Position = UDim2.new(0, 6, 0, 0)
+helpDistanceLabel.BackgroundTransparency = 1
+helpDistanceLabel.Text = "設定距離:"
+helpDistanceLabel.TextSize = 12
+helpDistanceLabel.Font = Enum.Font.GothamBold
+helpDistanceLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+helpDistanceLabel.TextXAlignment = Enum.TextXAlignment.Left
+helpDistanceLabel.Parent = helpDistanceFrame
+
+local helpDistanceInput = Instance.new("TextBox")
+helpDistanceInput.Size = UDim2.new(0, 100, 0, 22)
+helpDistanceInput.Position = UDim2.new(0, 90, 0, 5)
+helpDistanceInput.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+helpDistanceInput.BorderSizePixel = 1
+helpDistanceInput.BorderColor3 = Color3.fromRGB(221, 221, 221)
+helpDistanceInput.Text = "7"
+helpDistanceInput.PlaceholderText = "格"
+helpDistanceInput.TextSize = 12
+helpDistanceInput.Font = Enum.Font.Gotham
+helpDistanceInput.TextColor3 = Color3.fromRGB(50, 50, 50)
+helpDistanceInput.Parent = helpDistanceFrame
+Instance.new("UICorner", helpDistanceInput).CornerRadius = UDim.new(0, 5)
+
+local helpDistanceUnit = Instance.new("TextLabel")
+helpDistanceUnit.Size = UDim2.new(0, 30, 0, 22)
+helpDistanceUnit.Position = UDim2.new(0, 195, 0, 5)
+helpDistanceUnit.BackgroundTransparency = 1
+helpDistanceUnit.Text = "格"
+helpDistanceUnit.TextSize = 12
+helpDistanceUnit.Font = Enum.Font.Gotham
+helpDistanceUnit.TextColor3 = Color3.fromRGB(100, 100, 100)
+helpDistanceUnit.TextXAlignment = Enum.TextXAlignment.Left
+helpDistanceUnit.Parent = helpDistanceFrame
+
+local respawnTeleportFrame, respawnTeleportStatus, respawnTeleportButton = createControlRow(page2, "死後回場:", "", "", false, 3)
+
+-- 狀態標籤
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(0.9, 0, 0, 26)
+statusLabel.Position = UDim2.new(0.05, 0, 1, -32)
+statusLabel.BackgroundColor3 = Color3.fromRGB(255, 235, 238)
+statusLabel.Text = "系統就緒"
+statusLabel.TextSize = 11
+statusLabel.Font = Enum.Font.GothamBold
+statusLabel.TextColor3 = Color3.fromRGB(198, 40, 40)
+statusLabel.Parent = mainFrame
+Instance.new("UICorner", statusLabel).CornerRadius = UDim.new(0, 5)
+
+-- 功能實作
+local function updateStatus()
+    local active = {}
+    if toggles.autoAttack then table.insert(active, "攻擊中") end
+    if toggles.helpTarget then table.insert(active, "幫助中") end
+    if toggles.respawnTeleport then table.insert(active, "回場監控") end
+    
+    if #active > 0 then
+        statusLabel.Text = "✅ " .. table.concat(active, " | ")
+        statusLabel.BackgroundColor3 = Color3.fromRGB(232, 245, 233)
+        statusLabel.TextColor3 = Color3.fromRGB(46, 125, 50)
+    else
+        statusLabel.Text = "系統就緒"
+        statusLabel.BackgroundColor3 = Color3.fromRGB(255, 235, 238)
+        statusLabel.TextColor3 = Color3.fromRGB(198, 40, 40)
+    end
+end
+
+local function toggleUIState(btn, frame, input, isActive)
+    if isActive then
+        btn.Text = "解除"
+        btn.BackgroundColor3 = Color3.fromRGB(244, 67, 54)
+        frame.BackgroundColor3 = Color3.fromRGB(227, 242, 253)
+        if input and input:IsA("TextBox") then input.TextEditable = false end
+    else
+        btn.Text = "啟動"
+        btn.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+        frame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+        if input and input:IsA("TextBox") then input.TextEditable = true end
+    end
+    updateStatus()
+end
+
+-- 自動攻擊
+autoAttackButton.MouseButton1Click:Connect(function()
+    toggles.autoAttack = not toggles.autoAttack
+    
+    if toggles.autoAttack then
+        autoAttackStatus.Text = "運行中"
+        autoAttackStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
+        
+        local lastAttack = 0
+        connections.autoAttack = RunService.Heartbeat:Connect(function()
+            local target = getNearestPlayer()
+            if target and target.Character then
+                local torso = target.Character:FindFirstChild("Torso")
+                if torso then
+                    -- 跳躍
+                    makeJump()
+                    
+                    -- 攻擊
+                    local now = tick()
+                    if now - lastAttack >= values.attackInterval then
+                        pcall(function()
+                            ReplicatedStorage.springhit:FireServer(torso)
+                        end)
+                        lastAttack = now
+                    end
+                end
+            end
+        end)
+    else
+        autoAttackStatus.Text = "關閉"
+        autoAttackStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+        if connections.autoAttack then
+            connections.autoAttack:Disconnect()
+            connections.autoAttack = nil
+        end
+    end
+    
+    toggleUIState(autoAttackButton, autoAttackFrame, autoAttackStatus, toggles.autoAttack)
+end)
+
+-- 攻擊間隔
+attackIntervalInput.FocusLost:Connect(function()
+    local val = tonumber(attackIntervalInput.Text)
+    if val and val > 0 then
+        values.attackInterval = val
+    else
+        attackIntervalInput.Text = tostring(values.attackInterval)
+    end
+end)
+
+-- 跳躍力
+jumpPowerButton.MouseButton1Click:Connect(function()
+    toggles.jumpPower = not toggles.jumpPower
+    
+    if toggles.jumpPower then
+        getOriginalJumpPower()
+        values.jumpPower = tonumber(jumpPowerInput.Text) or 50
+        
+        local function applyJumpPower()
+            local char = player.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    if hum.UseJumpPower then
+                        hum.JumpPower = values.jumpPower
+                    else
+                        hum.JumpHeight = values.jumpPower
+                    end
+                end
+            end
+        end
+        
+        applyJumpPower()
+        
+        connections.jumpPower = RunService.Heartbeat:Connect(function()
+            if toggles.jumpPower then
+                applyJumpPower()
+            end
+        end)
+    else
+        if connections.jumpPower then
+            connections.jumpPower:Disconnect()
+            connections.jumpPower = nil
+        end
+        
+        local char = player.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                if hum.UseJumpPower then
+                    hum.JumpPower = originalJumpPower
+                else
+                    hum.JumpHeight = originalJumpPower
+                end
+            end
+        end
+    end
+    
+    toggleUIState(jumpPowerButton, jumpPowerFrame, jumpPowerInput, toggles.jumpPower)
+end)
+
+-- 幫助目標
+helpTargetButton.MouseButton1Click:Connect(function()
+    toggles.helpTarget = not toggles.helpTarget
+    
+    if toggles.helpTarget then
+        local targetPlayer, errorMsg = findPlayerByPartialName(helpTargetInput.Text)
+        
+        if not targetPlayer then
+            helpTargetInfo.Text = errorMsg or "找不到玩家"
+            helpTargetInfo.TextColor3 = Color3.fromRGB(200, 0, 0)
+            toggles.helpTarget = false
+            return
+        end
+        
+        values.targetPlayer = targetPlayer
+        helpTargetInfo.Text = "目標: " .. targetPlayer.Name
+        helpTargetInfo.TextColor3 = Color3.fromRGB(46, 125, 50)
+        
+        -- 先傳送到 Lobby
+        teleportToLobby()
+        
+        -- 等待1秒後開始跟隨
+        task.wait(1)
+        
+        connections.helpTarget = RunService.Heartbeat:Connect(function()
+            if not toggles.helpTarget or not values.targetPlayer then return end
+            
+            local myChar = player.Character
+            if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+            
+            local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+            if targetCFrame then
+                myChar.HumanoidRootPart.CFrame = targetCFrame
+            end
+        end)
+    else
+        helpTargetInfo.Text = "目標: 無"
+        helpTargetInfo.TextColor3 = Color3.fromRGB(120, 120, 120)
+        values.targetPlayer = nil
+        
+        if connections.helpTarget then
+            connections.helpTarget:Disconnect()
+            connections.helpTarget = nil
+        end
+    end
+    
+    toggleUIState(helpTargetButton, helpTargetFrame, helpTargetInput, toggles.helpTarget)
+end)
+
+-- 設定距離
+helpDistanceInput.FocusLost:Connect(function()
+    local val = tonumber(helpDistanceInput.Text)
+    if val and val > 0 then
+        values.helpDistance = val
+    else
+        helpDistanceInput.Text = tostring(values.helpDistance)
+    end
+end)
+
+-- 死後回場
+respawnTeleportButton.MouseButton1Click:Connect(function()
+    toggles.respawnTeleport = not toggles.respawnTeleport
+    
+    if toggles.respawnTeleport then
+        respawnTeleportStatus.Text = "監控中"
+        respawnTeleportStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
+        
+        connections.respawnTeleport = player.CharacterAdded:Connect(function(newChar)
+            if not toggles.respawnTeleport then return end
+            
+            task.wait(4)
+            
+            if toggles.respawnTeleport then
+                teleportToLobby()
+                
+                task.wait(1)
+                
+                -- 如果幫助目標還在運行，繼續跟隨
+                if toggles.helpTarget and values.targetPlayer then
+                    if connections.helpTarget then
+                        connections.helpTarget:Disconnect()
+                    end
+                    
+                    connections.helpTarget = RunService.Heartbeat:Connect(function()
+                        if not toggles.helpTarget or not values.targetPlayer then return end
+                        
+                        local myChar = player.Character
+                        if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+                        
+                        local targetCFrame = getPositionInFrontOfPlayer(values.targetPlayer, values.helpDistance)
+                        if targetCFrame then
+                            myChar.HumanoidRootPart.CFrame = targetCFrame
+                        end
+                    end)
+                end
+            end
+        end)
+    else
+        respawnTeleportStatus.Text = "關閉"
+        respawnTeleportStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+        
+        if connections.respawnTeleport then
+            connections.respawnTeleport:Disconnect()
+            connections.respawnTeleport = nil
+        end
+    end
+    
+    toggleUIState(respawnTeleportButton, respawnTeleportFrame, respawnTeleportStatus, toggles.respawnTeleport)
+end)
+
+-- 拖曳功能
+local function enableDrag(frame, dragHandle)
+    local dragging = false
+    local dragInput, dragStart, startPos
+    
+    local function update(input)
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+    
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    dragHandle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+end
+
+enableDrag(mainFrame, titleBar)
+
+-- 最小化UI
+local miniFrame = Instance.new("Frame")
+miniFrame.Size = UDim2.new(0, 150, 0, 32)
+miniFrame.Position = UDim2.new(0.5, -75, 0, 30)
+miniFrame.BackgroundColor3 = Color3.fromRGB(70, 180, 230)
+miniFrame.Visible = false
+miniFrame.Parent = screenGui
+Instance.new("UICorner", miniFrame).CornerRadius = UDim.new(0, 6)
+
+local miniTitle = Instance.new("TextLabel")
+miniTitle.Text = "彈簧精通"
+miniTitle.Size = UDim2.new(1, -36, 1, 0)
+miniTitle.BackgroundTransparency = 1
+miniTitle.Font = Enum.Font.GothamBold
+miniTitle.TextSize = 14
+miniTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+miniTitle.Parent = miniFrame
+
+local expandButton = Instance.new("TextButton")
+expandButton.Text = "+"
+expandButton.Size = UDim2.new(0, 24, 0, 24)
+expandButton.Position = UDim2.new(1, -28, 0, 4)
+expandButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+expandButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+expandButton.Parent = miniFrame
+Instance.new("UICorner", expandButton).CornerRadius = UDim.new(0, 5)
+
+enableDrag(miniFrame, miniFrame)
+
+minimizeButton.MouseButton1Click:Connect(function()
+    mainFrame.Visible = false
+    miniFrame.Visible = true
+end)
+
+expandButton.MouseButton1Click:Connect(function()
+    miniFrame.Visible = false
+    mainFrame.Visible = true
+end)
+
+-- 關閉按鈕
+closeButton.MouseButton1Click:Connect(function()
+    for _, conn in pairs(connections) do
+        if conn then conn:Disconnect() end
+    end
+    
+    -- 還原跳躍力
+    if toggles.jumpPower then
+        local char = player.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                if hum.UseJumpPower then
+                    hum.JumpPower = originalJumpPower
+                else
+                    hum.JumpHeight = originalJumpPower
+                end
+            end
+        end
+    end
+    
+    screenGui:Destroy()
+end)
+
+-- 角色重生處理
+player.CharacterAdded:Connect(function(newChar)
+    task.wait(0.5)
+    
+    if toggles.jumpPower then
+        getOriginalJumpPower()
+    end
+end)
+
+print("貓玲的彈簧精通腳本已載入！")
