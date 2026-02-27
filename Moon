@@ -1,4 +1,4 @@
--- 貓玲的月球精通腳本 v1.7
+-- 貓玲的月球精通腳本 v0.5
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -762,6 +762,8 @@ local function setupAutoEquip()
     
     if not toggles.autoEquip then return end
     
+    local lastRagdollState = false
+    
     local function checkRagdollAndEquip()
         local char = player.Character
         if not char then return end
@@ -769,30 +771,63 @@ local function setupAutoEquip()
         local humanoid = char:FindFirstChildOfClass("Humanoid")
         if not humanoid then return end
         
-        -- 檢查是否在ragdoll狀態
-        local isRagdoll = humanoid:GetState() == Enum.HumanoidStateType.Ragdoll or 
-                         humanoid:GetState() == Enum.HumanoidStateType.FallingDown
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
         
-        if isRagdoll then
-            -- Ragdoll狀態 - unequip工具
-            pcall(function()
-                if humanoid.Parent and humanoid.Parent:FindFirstChildOfClass("Tool") then
-                    humanoid:UnequipTools()
+        -- 檢查是否在ragdoll狀態 - 多種檢測方式
+        local isRagdoll = false
+        
+        -- 方法1: 檢查Humanoid狀態
+        local state = humanoid:GetState()
+        if state == Enum.HumanoidStateType.Ragdoll or 
+           state == Enum.HumanoidStateType.FallingDown or
+           state == Enum.HumanoidStateType.Physics then
+            isRagdoll = true
+        end
+        
+        -- 方法2: 檢查身體部位是否有BallSocketConstraint (ragdoll特徵)
+        if not isRagdoll then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BallSocketConstraint") then
+                    isRagdoll = true
+                    break
                 end
-            end)
-        else
-            -- 正常狀態 - equip工具
-            pcall(function()
-                local backpack = player:FindFirstChild("Backpack")
-                if backpack then
-                    for _, tool in pairs(backpack:GetChildren()) do
-                        if tool:IsA("Tool") then
-                            humanoid:EquipTool(tool)
-                            break
+            end
+        end
+        
+        -- 方法3: 檢查HumanoidRootPart的CanCollide狀態
+        if not isRagdoll and not hrp.CanCollide then
+            -- Ragdoll時HumanoidRootPart通常變成不可碰撞
+            local velocity = hrp.AssemblyLinearVelocity
+            if velocity and velocity.Magnitude > 10 then
+                isRagdoll = true
+            end
+        end
+        
+        -- 狀態改變時才執行操作
+        if isRagdoll ~= lastRagdollState then
+            lastRagdollState = isRagdoll
+            
+            if isRagdoll then
+                -- Ragdoll狀態 - unequip所有工具
+                pcall(function()
+                    humanoid:UnequipTools()
+                end)
+            else
+                -- 正常狀態 - equip工具
+                task.wait(0.2) -- 等待一小段時間確保完全恢復
+                pcall(function()
+                    local backpack = player:FindFirstChild("Backpack")
+                    if backpack then
+                        for _, tool in pairs(backpack:GetChildren()) do
+                            if tool:IsA("Tool") then
+                                humanoid:EquipTool(tool)
+                                break
+                            end
                         end
                     end
-                end
-            end)
+                end)
+            end
         end
     end
     
@@ -834,25 +869,17 @@ helpTargetButton.MouseButton1Click:Connect(function()
     toggles.helpTarget = not toggles.helpTarget
     
     if toggles.helpTarget then
-        local targetName = helpTargetInput.Text
+        local targetPlayer, errorMsg = findPlayerByPartialName(helpTargetInput.Text)
         
-        if targetName == "" then
-            helpTargetInfo.Text = "請輸入玩家名稱"
+        if not targetPlayer then
+            helpTargetInfo.Text = errorMsg or "找不到玩家"
             helpTargetInfo.TextColor3 = Color3.fromRGB(200, 0, 0)
             toggles.helpTarget = false
             return
         end
         
-        values.targetPlayer = Players:FindFirstChild(targetName)
-        
-        if not values.targetPlayer then
-            helpTargetInfo.Text = "找不到玩家: " .. targetName
-            helpTargetInfo.TextColor3 = Color3.fromRGB(200, 0, 0)
-            toggles.helpTarget = false
-            return
-        end
-        
-        helpTargetInfo.Text = "目標: " .. values.targetPlayer.Name
+        values.targetPlayer = targetPlayer
+        helpTargetInfo.Text = "目標: " .. targetPlayer.Name
         helpTargetInfo.TextColor3 = Color3.fromRGB(46, 125, 50)
         
         -- 幫助模式主循環
@@ -1190,7 +1217,7 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的月球精通腳本 v1.7 已載入!")
+print("貓玲的月球精通腳本 v0.5 已載入!")
 print("主要功能:")
 print("1. 自動攻擊: 每0.8秒攻擊距離內的玩家")
 print("2. 攻擊距離: 可自訂,預設25單位")
