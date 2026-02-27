@@ -1,4 +1,4 @@
--- 貓玲的月球精通腳本 v0.5
+-- 貓玲的月球精通腳本 v0.6
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -982,31 +982,51 @@ helpTargetButton.MouseButton1Click:Connect(function()
                                             local targetLookDirection = targetRoot.CFrame.LookVector
                                             local newPos = targetRoot.Position + (targetLookDirection * values.helpDistance)
                                             newCharacter.HumanoidRootPart.CFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                            
+                                            -- 如果固定模式開啟，記錄這個位置
+                                            if toggles.fixedPosition then
+                                                values.fixedCFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                            end
                                         end
                                     end)
                                     
                                     task.wait(0.3)
                                     break
                                 else
-                                    -- 不重置模式 - 每0.5秒移動到目標玩家前方
+                                    -- 不重置模式 - 根據固定模式決定行為
                                     isMovingLocked = true
                                     
-                                    -- 持續跟隨目標玩家直到功能關閉
-                                    while toggles.helpTarget and isMovingLocked do
-                                        pcall(function()
-                                            if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                                                local targetRoot = targetPlayer.Character.HumanoidRootPart
-                                                local targetPos = targetRoot.Position
-                                                local targetLookDirection = targetRoot.CFrame.LookVector
-                                                
-                                                local newPos = targetPos + (targetLookDirection * values.helpDistance)
-                                                
-                                                if humanoidRootPart and humanoidRootPart.Parent then
-                                                    humanoidRootPart.CFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                    if toggles.fixedPosition then
+                                        -- 固定模式：停留在被打的位置
+                                        local currentPos = humanoidRootPart.CFrame
+                                        values.fixedCFrame = currentPos
+                                        
+                                        while toggles.helpTarget and toggles.fixedPosition and isMovingLocked do
+                                            pcall(function()
+                                                if humanoidRootPart and humanoidRootPart.Parent and values.fixedCFrame then
+                                                    humanoidRootPart.CFrame = values.fixedCFrame
                                                 end
-                                            end
-                                        end)
-                                        task.wait(0.5)
+                                            end)
+                                            task.wait(0.1)
+                                        end
+                                    else
+                                        -- 跟隨模式：每0.2秒移動到目標玩家前方
+                                        while toggles.helpTarget and not toggles.fixedPosition and isMovingLocked do
+                                            pcall(function()
+                                                if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                                                    local targetRoot = targetPlayer.Character.HumanoidRootPart
+                                                    local targetPos = targetRoot.Position
+                                                    local targetLookDirection = targetRoot.CFrame.LookVector
+                                                    
+                                                    local newPos = targetPos + (targetLookDirection * values.helpDistance)
+                                                    
+                                                    if humanoidRootPart and humanoidRootPart.Parent then
+                                                        humanoidRootPart.CFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                                    end
+                                                end
+                                            end)
+                                            task.wait(0.2)
+                                        end
                                     end
                                     break
                                 end
@@ -1023,20 +1043,56 @@ helpTargetButton.MouseButton1Click:Connect(function()
                                 break
                             end
                             
-                            -- 持續移動到目標前方
-                            pcall(function()
-                                local targetRoot = targetPlayer.Character.HumanoidRootPart
-                                local targetPos = targetRoot.Position
-                                local targetLookDirection = targetRoot.CFrame.LookVector
+                            -- 初始移動到目標前方的邏輯
+                            if toggles.fixedPosition then
+                                -- 固定模式：只傳送一次，然後固定
+                                pcall(function()
+                                    local targetRoot = targetPlayer.Character.HumanoidRootPart
+                                    local targetPos = targetRoot.Position
+                                    local targetLookDirection = targetRoot.CFrame.LookVector
+                                    
+                                    local newPos = targetPos + (targetLookDirection * values.helpDistance)
+                                    local newCFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                    
+                                    if humanoidRootPart and humanoidRootPart.Parent then
+                                        humanoidRootPart.CFrame = newCFrame
+                                        values.fixedCFrame = newCFrame
+                                    end
+                                end)
                                 
-                                local newPos = targetPos + (targetLookDirection * values.helpDistance)
-                                
-                                if (humanoidRootPart.Position - newPos).Magnitude > 1 then
-                                    humanoidRootPart.CFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                -- 固定在這個位置
+                                while toggles.helpTarget and toggles.fixedPosition and humanoid.Health > 0 do
+                                    pcall(function()
+                                        if humanoidRootPart and humanoidRootPart.Parent and values.fixedCFrame then
+                                            humanoidRootPart.CFrame = values.fixedCFrame
+                                        end
+                                    end)
+                                    
+                                    -- 檢查是否被打
+                                    local lastSlappedBy = playerWorkspaceFolder:FindFirstChild("LastSlappedBy")
+                                    if lastSlappedBy and lastSlappedBy.Value == targetPlayer.Name then
+                                        break
+                                    end
+                                    
+                                    task.wait(0.1)
                                 end
-                            end)
-                            
-                            task.wait(0.1)
+                                break
+                            else
+                                -- 跟隨模式：持續移動到目標前方，間隔更短
+                                pcall(function()
+                                    local targetRoot = targetPlayer.Character.HumanoidRootPart
+                                    local targetPos = targetRoot.Position
+                                    local targetLookDirection = targetRoot.CFrame.LookVector
+                                    
+                                    local newPos = targetPos + (targetLookDirection * values.helpDistance)
+                                    
+                                    if (humanoidRootPart.Position - newPos).Magnitude > 1 then
+                                        humanoidRootPart.CFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                    end
+                                end)
+                                
+                                task.wait(0.05)  -- 減少間隔從0.1到0.05秒
+                            end
                         end
                     end
                 end)
@@ -1217,7 +1273,7 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的月球精通腳本 v0.5 已載入!")
+print("貓玲的月球精通腳本 v0.6 已載入!")
 print("主要功能:")
 print("1. 自動攻擊: 每0.8秒攻擊距離內的玩家")
 print("2. 攻擊距離: 可自訂,預設25單位")
