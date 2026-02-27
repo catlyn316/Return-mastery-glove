@@ -1,4 +1,4 @@
--- 貓玲的月球精通腳本 v0.6
+-- 貓玲的月球精通腳本 v0.7
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -885,6 +885,7 @@ helpTargetButton.MouseButton1Click:Connect(function()
         -- 幫助模式主循環
         connections.helpTarget = task.spawn(function()
             local isMovingLocked = false
+            local shouldUpdateFixedPos = true  -- 控制是否應該更新固定位置
             
             while toggles.helpTarget do
                 local character = player.Character
@@ -981,11 +982,12 @@ helpTargetButton.MouseButton1Click:Connect(function()
                                             local targetRoot = targetPlayer.Character.HumanoidRootPart
                                             local targetLookDirection = targetRoot.CFrame.LookVector
                                             local newPos = targetRoot.Position + (targetLookDirection * values.helpDistance)
-                                            newCharacter.HumanoidRootPart.CFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                            local newCFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                            newCharacter.HumanoidRootPart.CFrame = newCFrame
                                             
                                             -- 如果固定模式開啟，記錄這個位置
                                             if toggles.fixedPosition then
-                                                values.fixedCFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                                values.fixedCFrame = newCFrame
                                             end
                                         end
                                     end)
@@ -995,12 +997,10 @@ helpTargetButton.MouseButton1Click:Connect(function()
                                 else
                                     -- 不重置模式 - 根據固定模式決定行為
                                     isMovingLocked = true
+                                    shouldUpdateFixedPos = false  -- 被打後不再更新固定位置
                                     
                                     if toggles.fixedPosition then
-                                        -- 固定模式：停留在被打的位置
-                                        local currentPos = humanoidRootPart.CFrame
-                                        values.fixedCFrame = currentPos
-                                        
+                                        -- 固定模式：停留在固定位置（不是當前被打的位置）
                                         while toggles.helpTarget and toggles.fixedPosition and isMovingLocked do
                                             pcall(function()
                                                 if humanoidRootPart and humanoidRootPart.Parent and values.fixedCFrame then
@@ -1046,25 +1046,34 @@ helpTargetButton.MouseButton1Click:Connect(function()
                             -- 初始移動到目標前方的邏輯
                             if toggles.fixedPosition then
                                 -- 固定模式：只傳送一次，然後固定
-                                pcall(function()
-                                    local targetRoot = targetPlayer.Character.HumanoidRootPart
-                                    local targetPos = targetRoot.Position
-                                    local targetLookDirection = targetRoot.CFrame.LookVector
-                                    
-                                    local newPos = targetPos + (targetLookDirection * values.helpDistance)
-                                    local newCFrame = CFrame.new(newPos, newPos + targetLookDirection)
-                                    
-                                    if humanoidRootPart and humanoidRootPart.Parent then
-                                        humanoidRootPart.CFrame = newCFrame
-                                        values.fixedCFrame = newCFrame
-                                    end
-                                end)
+                                if shouldUpdateFixedPos then
+                                    pcall(function()
+                                        local targetRoot = targetPlayer.Character.HumanoidRootPart
+                                        local targetPos = targetRoot.Position
+                                        local targetLookDirection = targetRoot.CFrame.LookVector
+                                        
+                                        local newPos = targetPos + (targetLookDirection * values.helpDistance)
+                                        local newCFrame = CFrame.new(newPos, newPos + targetLookDirection)
+                                        
+                                        if humanoidRootPart and humanoidRootPart.Parent then
+                                            humanoidRootPart.CFrame = newCFrame
+                                            values.fixedCFrame = newCFrame
+                                            shouldUpdateFixedPos = false  -- 標記已設置固定位置，不再更新
+                                        end
+                                    end)
+                                end
                                 
                                 -- 固定在這個位置
                                 while toggles.helpTarget and toggles.fixedPosition and humanoid.Health > 0 do
                                     pcall(function()
                                         if humanoidRootPart and humanoidRootPart.Parent and values.fixedCFrame then
-                                            humanoidRootPart.CFrame = values.fixedCFrame
+                                            -- 只在不是ragdoll狀態時才強制固定
+                                            local state = humanoid:GetState()
+                                            if state ~= Enum.HumanoidStateType.Ragdoll and 
+                                               state ~= Enum.HumanoidStateType.FallingDown and
+                                               state ~= Enum.HumanoidStateType.Physics then
+                                                humanoidRootPart.CFrame = values.fixedCFrame
+                                            end
                                         end
                                     end)
                                     
@@ -1273,7 +1282,7 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-print("貓玲的月球精通腳本 v0.6 已載入!")
+print("貓玲的月球精通腳本 v0.7 已載入!")
 print("主要功能:")
 print("1. 自動攻擊: 每0.8秒攻擊距離內的玩家")
 print("2. 攻擊距離: 可自訂,預設25單位")
@@ -1281,4 +1290,5 @@ print("3. 攻擊間隔: 可自訂,預設0.8秒")
 print("4. 幫助模式: 自動跟隨目標玩家並在被打後處理")
 print("5. 幫助模式選項: 被打後重置 / 被打後不重置 (預設)")
 print("6. 自動裝備: ragdoll時自動收回,恢復後自動裝備 (預設開啟)")
-print("7. 傳送後固定: 預設開啟")
+print("7. 傳送後固定: 預設開啟 - ragdoll時不會改變固定位置")
+print("8. v0.7修復: 固定位置不受ragdoll等移動影響")
