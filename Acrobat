@@ -1,4 +1,4 @@
--- 貓玲的雜技演員精通腳本 v0.8
+-- 貓玲的雜技演員精通腳本 v0.5
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -18,7 +18,6 @@ local toggles = {
     jumpPower = false,
     helpTarget = false,
     fixedPosition = true,  -- 傳送後固定,預設開啟
-    autoEquip = true  -- 自動裝備/收回,預設開啟
 }
 
 local values = {
@@ -37,7 +36,6 @@ local connections = {
     jumpPower = nil,
     helpTarget = nil,
     fixedPosition = nil,
-    autoEquip = nil
 }
 
 -- 輔助函數
@@ -518,8 +516,6 @@ helpModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 helpModeButton.Parent = helpModeFrame
 Instance.new("UICorner", helpModeButton).CornerRadius = UDim.new(0, 5)
 
--- 自動裝備/收回
-local autoEquipFrame, autoEquipStatus, autoEquipButton = createControlRow(page2, "自動裝備:", "", "", false, 3.5)
 
 local fixedPositionFrame, fixedPositionStatus, fixedPositionButton = createControlRow(page2, "傳送後固定:", "", "", false, 4)
 
@@ -712,108 +708,6 @@ helpModeButton.MouseButton1Click:Connect(function()
     helpModeButton.Text = values.helpMode
 end)
 
--- 自動裝備/收回功能
-local function setupAutoEquip()
-    if connections.autoEquip then
-        connections.autoEquip:Disconnect()
-        connections.autoEquip = nil
-    end
-    
-    if not toggles.autoEquip then return end
-    
-    local lastRagdollState = false
-    
-    local function checkRagdollAndEquip()
-        local char = player.Character
-        if not char then return end
-        
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if not humanoid then return end
-        
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        
-        local isRagdoll = false
-        
-        local state = humanoid:GetState()
-        if state == Enum.HumanoidStateType.Ragdoll or 
-           state == Enum.HumanoidStateType.FallingDown or
-           state == Enum.HumanoidStateType.Physics then
-            isRagdoll = true
-        end
-        
-        if not isRagdoll then
-            for _, part in pairs(char:GetDescendants()) do
-                if part:IsA("BallSocketConstraint") then
-                    isRagdoll = true
-                    break
-                end
-            end
-        end
-        
-        if not isRagdoll and not hrp.CanCollide then
-            local velocity = hrp.AssemblyLinearVelocity
-            if velocity and velocity.Magnitude > 10 then
-                isRagdoll = true
-            end
-        end
-        
-        if isRagdoll ~= lastRagdollState then
-            lastRagdollState = isRagdoll
-            
-            if isRagdoll then
-                pcall(function()
-                    humanoid:UnequipTools()
-                end)
-            else
-                task.wait(0.2)
-                pcall(function()
-                    local backpack = player:FindFirstChild("Backpack")
-                    if backpack then
-                        for _, tool in pairs(backpack:GetChildren()) do
-                            if tool:IsA("Tool") then
-                                humanoid:EquipTool(tool)
-                                break
-                            end
-                        end
-                    end
-                end)
-            end
-        end
-    end
-    
-    connections.autoEquip = RunService.Heartbeat:Connect(function()
-        if toggles.autoEquip then
-            checkRagdollAndEquip()
-        end
-    end)
-end
-
--- 自動裝備按鈕
-autoEquipButton.MouseButton1Click:Connect(function()
-    toggles.autoEquip = not toggles.autoEquip
-    
-    if toggles.autoEquip then
-        autoEquipStatus.Text = "啟用"
-        autoEquipStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
-        setupAutoEquip()
-    else
-        autoEquipStatus.Text = "關閉"
-        autoEquipStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
-        if connections.autoEquip then
-            connections.autoEquip:Disconnect()
-            connections.autoEquip = nil
-        end
-    end
-    
-    toggleUIState(autoEquipButton, autoEquipFrame, autoEquipStatus, toggles.autoEquip)
-end)
-
--- 初始化自動裝備為開啟狀態
-autoEquipStatus.Text = "啟用"
-autoEquipStatus.TextColor3 = Color3.fromRGB(46, 125, 50)
-toggleUIState(autoEquipButton, autoEquipFrame, autoEquipStatus, true)
-setupAutoEquip()
 
 -- ============================================================
 -- 幫助目標邏輯
@@ -1191,19 +1085,13 @@ player.CharacterAdded:Connect(function(newChar)
     if toggles.jumpPower then
         getOriginalJumpPower()
     end
-    
-    if toggles.autoEquip then
-        setupAutoEquip()
-    end
 end)
 
-print("貓玲的雜技演員精通腳本 v0.8 已載入!")
+print("貓玲的雜技演員精通腳本 v0.5 已載入!")
 print("主要功能:")
 print("1. 自動攻擊: 每N秒先 Roll:FireServer() 再 AcHit:FireServer(Torso)")
 print("2. 攻擊距離: 可自訂，預設25單位")
 print("3. 攻擊間隔: 可自訂，預設0.8秒")
 print("4. 幫助模式: 自動跟隨目標玩家並在被打後處理")
 print("5. 幫助模式選項: 被打後重置 / 被打後不重置 (預設)")
-print("6. 自動裝備: ragdoll時自動收回,恢復後自動裝備 (預設開啟)")
-print("7. 傳送後固定: 預設開啟")
-print("8. v0.8修復: 被打後不重置模式不再被傳回 Teleport1")
+print("6. 傳送後固定: 預設開啟")
