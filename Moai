@@ -213,7 +213,9 @@ end
 --    階段一「正常」  → LastSlappedBy 變成目標名字
 --    階段二「等恢復」→ 等自己從 ragdoll 站起來
 --    階段三「等二次」→ 再次進入 ragdoll 時觸發 Reset
--- ===========================================================local function runHelpLoopReset(hrp, hum, tgt)
+-- ===========================================================
+
+local function runHelpLoopReset(hrp, hum, tgt)
     local lsbObj  = nil
     local lsbConn = nil
     local phase   = "正常"
@@ -352,7 +354,6 @@ end
     log("主循環結束，最終階段: " .. phase)
     if lsbConn then pcall(function() lsbConn:Disconnect() end) end
 end
-
 -- ============================================================
 -- ② 幫助者外層循環（傳送 + 選模式）
 -- ============================================================
