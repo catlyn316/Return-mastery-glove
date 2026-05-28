@@ -215,12 +215,9 @@ end
 --    階段三「等二次」→ 再次進入 ragdoll 時觸發 Reset
 -- ============================================================
 local function runHelpLoopReset(hrp, hum, tgt)
-    local lsbObj      = nil
-    local lsbConn     = nil
-    local myRagObj    = nil
-    local myRagConn   = nil
-    local phase       = "正常"
-    local shouldReset = false
+    local lsbObj   = nil
+    local lsbConn  = nil
+    local phase    = "正常"
 
     -- 取得 LastSlappedBy
     pcall(function()
@@ -240,37 +237,22 @@ local function runHelpLoopReset(hrp, hum, tgt)
         end)
     end
 
-    -- 監聽自己的 ragdoll（用於第三階段）
-    local function setupMyRagConn()
-        if myRagConn then pcall(function() myRagConn:Disconnect() end) end
+    -- 輔助：直接讀 Workspace.玩家名.Ragdolled.Value
+    local function getRagdolled()
+        local val = false
         pcall(function()
             local folder = Workspace:FindFirstChild(player.Name)
-            if folder then myRagObj = folder:FindFirstChild("Ragdolled") end
-        end)
-        if myRagObj and myRagObj.Parent then
-            myRagConn = myRagObj.Changed:Connect(function(val)
-                if phase == "等二次" and val == true then
-                    shouldReset = true
-                end
-            end)
-        else
-            local char = player.Character
-            local hum2 = char and char:FindFirstChildOfClass("Humanoid")
-            if hum2 then
-                myRagConn = hum2.StateChanged:Connect(function(_, newState)
-                    if phase == "等二次" then
-                        if newState == Enum.HumanoidStateType.FallingDown
-                        or newState == Enum.HumanoidStateType.Ragdoll then
-                            shouldReset = true
-                        end
-                    end
-                end)
+            if folder then
+                local rv = folder:FindFirstChild("Ragdolled")
+                if rv then val = (rv.Value == true) end
             end
-        end
+        end)
+        return val
     end
 
     setupLSBConn()
-    setupMyRagConn()
+
+    local prevRagdolled = getRagdolled()
 
     while toggles.helpTarget do
         if not (hrp and hrp.Parent) then break end
@@ -285,39 +267,32 @@ local function runHelpLoopReset(hrp, hum, tgt)
             setupLSBConn()
         end
 
-        -- 觸發重置
-        if shouldReset then
-            shouldReset = false
-            phase       = "正常"
-            if lsbConn   then pcall(function() lsbConn:Disconnect()  end) end
-            if myRagConn then pcall(function() myRagConn:Disconnect() end) end
-            pcall(function() player.Reset:FireServer() end)
-            task.wait(0.1)
-            break
-        end
+        local nowRagdolled = getRagdolled()
 
-        -- 階段二：偵測恢復
         if phase == "等恢復" then
-            local ragNow = false
-            pcall(function()
-                local folder = Workspace:FindFirstChild(player.Name)
-                if folder then
-                    local rv = folder:FindFirstChild("Ragdolled")
-                    if rv then ragNow = (rv.Value == true) end
-                end
-            end)
-            if not ragNow and not isRagdolled then
+            -- 等自己從 ragdoll 站起來（Ragdolled 變 false）
+            if not nowRagdolled then
                 phase = "等二次"
-                setupMyRagConn()
+            end
+
+        elseif phase == "等二次" then
+            -- 主動偵測 Ragdolled 從 false → true（上升緣）
+            if nowRagdolled and not prevRagdolled then
+                -- 觸發重置
+                phase = "正常"
+                if lsbConn then pcall(function() lsbConn:Disconnect() end) end
+                pcall(function() player.Reset:FireServer() end)
+                task.wait(0.1)
+                break
             end
         end
 
+        prevRagdolled = nowRagdolled
         applyHelpPosition(hrp, tgt)
         task.wait(0.05)
     end
 
-    if lsbConn   then pcall(function() lsbConn:Disconnect()  end) end
-    if myRagConn then pcall(function() myRagConn:Disconnect() end) end
+    if lsbConn then pcall(function() lsbConn:Disconnect() end) end
 end
 
 -- ============================================================
