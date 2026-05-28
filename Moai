@@ -54,7 +54,7 @@ local toggles = {
 }
 
 local values = {
-    attackInterval = 1.0,
+    attackInterval = 3,
     helpDistance   = 5,           -- 預設 5 格
     helpMode       = "被打後重置", -- "被打後重置" | "被打後不重置"
     targetPlayer   = nil,
