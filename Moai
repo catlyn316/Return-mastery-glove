@@ -1,4 +1,4 @@
--- 貓玲的石像腳本 v1.3
+-- 貓玲的石像腳本 v1.2
 -- 石頭主題 | 攻擊 / 幫助 / 說明 三分區
 
 local CoreGui           = game:GetService("CoreGui")
@@ -214,11 +214,8 @@ end
 --    階段二「等恢復」→ 等自己從 ragdoll 站起來
 --    階段三「等二次」→ 再次進入 ragdoll 時觸發 Reset
 -- ===========================================================
-
 local function runHelpLoopReset(hrp, hum, tgt)
-    local lsbObj  = nil
-    local lsbConn = nil
-    local phase   = "正常"
+    local phase = "正常"
 
     local function log(msg)
         print("[石像幫助] " .. tostring(msg))
@@ -236,106 +233,83 @@ local function runHelpLoopReset(hrp, hum, tgt)
         return val
     end
 
-    local function getLSBValue()
+    local function getLSB()
         local val = ""
         pcall(function()
-            if lsbObj and lsbObj.Parent then
-                val = tostring(lsbObj.Value)
+            local folder = Workspace:FindFirstChild(player.Name)
+            if folder then
+                local obj = folder:FindFirstChild("LastSlappedBy")
+                if obj then val = tostring(obj.Value) end
             end
         end)
         return val
     end
 
-    -- 取得 lsbObj
-    pcall(function()
-        local folder = Workspace:FindFirstChild(player.Name)
-        if folder then
-            lsbObj = folder:FindFirstChild("LastSlappedBy")
-        end
-    end)
+    local prevRag  = getRagdolled()
+    local prevLSB  = getLSB()
+    local logTimer = 0
 
-    -- LSB Changed：只負責從「正常」切到「等恢復」
-    -- 重置後回到正常，再次被目標打時再觸發
-    local function setupLSBConn()
-        if lsbConn then pcall(function() lsbConn:Disconnect() end) end
-        if not lsbObj or not lsbObj.Parent then return end
-        lsbConn = lsbObj.Changed:Connect(function(newVal)
-            log("LSB 變更 → " .. tostring(newVal) .. "（階段：" .. phase .. "）")
-            if phase == "正常" then
-                if newVal == tgt.Name or newVal == tgt.DisplayName then
-                    log("✅ 正常 → 等恢復")
-                    phase = "等恢復"
-                end
-            end
-        end)
-    end
+    log("啟動 | LSB = " .. prevLSB .. " | Ragdolled = " .. tostring(prevRag))
 
-    setupLSBConn()
-
-    -- ★ 啟動時主動檢查 LSB 當前值
-    local curLSB = getLSBValue()
-    log("啟動時 LSB = " .. curLSB .. "，Ragdolled = " .. tostring(getRagdolled()))
-    if curLSB == tgt.Name or curLSB == tgt.DisplayName then
-        log("✅ 啟動時 LSB 已是目標，直接進「等恢復」")
+    -- 啟動時 LSB 已是目標就直接進等恢復
+    if prevLSB == tgt.Name or prevLSB == tgt.DisplayName then
+        log("✅ 啟動時 LSB 已是目標，進「等恢復」")
         phase = "等恢復"
     end
-
-    local prevRag = getRagdolled()
-    local logTimer = 0
 
     while toggles.helpTarget do
         if not (hrp and hrp.Parent) then log("hrp 失效") break end
         if hum.Health <= 0 then log("血量歸零") break end
 
-        -- 補回失效 lsbObj
-        if not lsbObj or not lsbObj.Parent then
-            pcall(function()
-                local folder = Workspace:FindFirstChild(player.Name)
-                if folder then lsbObj = folder:FindFirstChild("LastSlappedBy") end
-            end)
-            setupLSBConn()
-        end
-
         local nowRag = getRagdolled()
+        local nowLSB = getLSB()
+
+        -- LSB 輪詢：偵測變更（不靠 .Changed）
+        if nowLSB ~= prevLSB then
+            log("LSB 變更: " .. prevLSB .. " → " .. nowLSB)
+        end
 
         -- 心跳 log（每 2 秒）
         logTimer = logTimer + 0.05
         if logTimer >= 2 then
             logTimer = 0
             log("心跳 | 階段: " .. phase
-                .. " | Ragdolled: " .. tostring(nowRag)
-                .. " | LSB: " .. getLSBValue())
+                .. " | Rag: " .. tostring(nowRag)
+                .. " | LSB: " .. nowLSB)
         end
 
-        if phase == "等恢復" then
-            -- 等 Ragdolled 從任意狀態變成 false（站起來）
+        if phase == "正常" then
+            -- 輪詢到 LSB 是目標名字就進等恢復
+            if nowLSB == tgt.Name or nowLSB == tgt.DisplayName then
+                log("✅ 正常 → 等恢復（LSB 輪詢到目標）")
+                phase = "等恢復"
+            end
+
+        elseif phase == "等恢復" then
             if not nowRag then
                 log("✅ 等恢復 → 等二次（Ragdolled = false）")
                 phase = "等二次"
             end
 
         elseif phase == "等二次" then
-            -- 等 Ragdolled 上升緣（false → true），不管誰打的
             if nowRag and not prevRag then
-                log("✅ 偵測到二次 ragdoll → 觸發 Reset")
+                log("✅ 二次 ragdoll 上升緣 → Reset")
                 phase = "正常"
-                if lsbConn then pcall(function() lsbConn:Disconnect() end) end
                 pcall(function() player.Reset:FireServer() end)
                 task.wait(0.1)
-                -- 重置後重新設定 LSB 監聽，準備下一輪
-                setupLSBConn()
                 break
             end
         end
 
         prevRag = nowRag
+        prevLSB = nowLSB
         applyHelpPosition(hrp, tgt)
         task.wait(0.05)
     end
 
     log("循環結束，最終階段: " .. phase)
-    if lsbConn then pcall(function() lsbConn:Disconnect() end) end
 end
+
 -- ============================================================
 -- ② 幫助者外層循環（傳送 + 選模式）
 -- ============================================================
