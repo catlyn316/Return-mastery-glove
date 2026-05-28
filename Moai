@@ -1,4 +1,4 @@
--- 貓玲的石像腳本 v1.3
+-- 貓玲的石像腳本 v1.2
 -- 石頭主題 | 攻擊 / 幫助 / 說明 三分區
 
 local CoreGui           = game:GetService("CoreGui")
