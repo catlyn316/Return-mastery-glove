@@ -1,10 +1,10 @@
--- 貓玲的石像腳本 v1.0
+-- 貓玲的石像腳本 v1.1
 -- 石頭主題 | 攻擊 / 幫助 / 說明 三分區
 
-local CoreGui          = game:GetService("CoreGui")
-local Players          = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local Workspace        = game:GetService("Workspace")
+local CoreGui           = game:GetService("CoreGui")
+local Players           = game:GetService("Players")
+local UserInputService  = game:GetService("UserInputService")
+local Workspace         = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player    = Players.LocalPlayer
@@ -48,17 +48,17 @@ local THEME = {
 -- 全域狀態
 -- ============================================================
 local toggles = {
-    autoAttack    = false,
-    helpTarget    = false,
-    fixedPosHelp  = true,
+    autoAttack   = false,
+    helpTarget   = false,
+    fixedPosHelp = true,
 }
 
 local values = {
-    attackInterval  = 1.0,   -- 攻擊間隔（秒）
-    helpDistance    = 15,
-    helpMode        = "被打後重置",  -- 此腳本固定使用進階判定
-    targetPlayer    = nil,
-    fixedCFrame     = nil,
+    attackInterval = 1.0,
+    helpDistance   = 5,           -- 預設 5 格
+    helpMode       = "被打後重置", -- "被打後重置" | "被打後不重置"
+    targetPlayer   = nil,
+    fixedCFrame    = nil,
 }
 
 local threads = {
@@ -66,7 +66,7 @@ local threads = {
     helpTarget = nil,
 }
 
--- Ragdoll 偵測（幫助者用）
+-- Ragdoll 全域狀態（供幫助者邏輯使用）
 local isRagdolled   = false
 local ragdolledConn = nil
 
@@ -116,26 +116,23 @@ player.CharacterAdded:Connect(function()
     task.wait(0.5)
     setupRagdollDetection()
 end)
-
 if player.Character then setupRagdollDetection() end
 
 -- ============================================================
 -- 輔助：尋找最近玩家
 -- ============================================================
 local function findClosestPlayer()
-    local closestPlayer = nil
+    local closestPlayer    = nil
     local shortestDistance = math.huge
-    local localCharacter = player.Character
-    if not localCharacter or not localCharacter:FindFirstChild("HumanoidRootPart") then
-        return nil
-    end
+    local localCharacter   = player.Character
+    if not localCharacter or not localCharacter:FindFirstChild("HumanoidRootPart") then return nil end
     local localPosition = localCharacter.HumanoidRootPart.Position
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-            local distance = (p.Character.HumanoidRootPart.Position - localPosition).Magnitude
-            if distance < shortestDistance then
-                shortestDistance = distance
-                closestPlayer = p
+            local d = (p.Character.HumanoidRootPart.Position - localPosition).Magnitude
+            if d < shortestDistance then
+                shortestDistance = d
+                closestPlayer    = p
             end
         end
     end
@@ -167,23 +164,22 @@ local function findPlayerByPartialName(input)
 end
 
 -- ============================================================
--- ① 自動攻擊邏輯（第三任務：最近玩家 + GeneralHit）
+-- ① 自動攻擊（第三任務：最近玩家 + GeneralHit）
 -- ============================================================
 local function runAutoAttackLoop()
     while toggles.autoAttack do
-        local closestPlayer = findClosestPlayer()
-        if closestPlayer and closestPlayer.Character and closestPlayer.Character:FindFirstChild("Head") then
+        local cp = findClosestPlayer()
+        if cp and cp.Character and cp.Character:FindFirstChild("Head") then
             pcall(function()
-                ReplicatedStorage.GeneralHit:FireServer(closestPlayer.Character.Head)
+                ReplicatedStorage.GeneralHit:FireServer(cp.Character.Head)
             end)
         end
-        local interval = math.max(0.1, values.attackInterval)
-        task.wait(interval)
+        task.wait(math.max(0.1, values.attackInterval))
     end
 end
 
 -- ============================================================
--- ② 幫助者位置保持：固定 CFrame 或跟隨
+-- ② 幫助者：位置保持輔助
 -- ============================================================
 local function applyHelpPosition(hrp, tgt)
     pcall(function()
@@ -201,17 +197,32 @@ local function applyHelpPosition(hrp, tgt)
 end
 
 -- ============================================================
--- ② 幫助者主判定邏輯：
---    LastSlappedBy == 目標 → 等待從 ragdoll 恢復
---    → 再次進入 ragdoll 時觸發重置
+-- ② 幫助者 - 被打後不重置（只保持位置）
+-- ============================================================
+local function runHelpLoopNoReset(hrp, hum, tgt)
+    while toggles.helpTarget do
+        if not (hrp and hrp.Parent) then break end
+        if hum.Health <= 0 then break end
+        applyHelpPosition(hrp, tgt)
+        task.wait(0.05)
+    end
+end
+
+-- ============================================================
+-- ② 幫助者 - 被打後重置（進階三段判定）
+--    階段一「正常」  → LastSlappedBy 變成目標名字
+--    階段二「等恢復」→ 等自己從 ragdoll 站起來
+--    階段三「等二次」→ 再次進入 ragdoll 時觸發 Reset
 -- ============================================================
 local function runHelpLoopReset(hrp, hum, tgt)
-    local lsbObj    = nil
-    local lsbConn   = nil
-    local phase     = "正常"  -- "正常" | "等恢復" | "等第二次ragdoll"
+    local lsbObj      = nil
+    local lsbConn     = nil
+    local myRagObj    = nil
+    local myRagConn   = nil
+    local phase       = "正常"
     local shouldReset = false
 
-    -- 取得 LastSlappedBy 物件
+    -- 取得 LastSlappedBy
     pcall(function()
         local folder = Workspace:FindFirstChild(player.Name)
         if folder then lsbObj = folder:FindFirstChild("LastSlappedBy") end
@@ -223,35 +234,31 @@ local function runHelpLoopReset(hrp, hum, tgt)
         lsbConn = lsbObj.Changed:Connect(function(newVal)
             if phase == "正常" then
                 if newVal == tgt.Name or newVal == tgt.DisplayName then
-                    -- 第一次被目標打：進入「等從 ragdoll 恢復」階段
                     phase = "等恢復"
                 end
             end
         end)
     end
 
-    -- 監聽自己的 ragdoll 狀態（用於判定第二次 ragdoll）
-    local myRagdolledObj = nil
-    local myRagConn      = nil
+    -- 監聽自己的 ragdoll（用於第三階段）
     local function setupMyRagConn()
         if myRagConn then pcall(function() myRagConn:Disconnect() end) end
         pcall(function()
             local folder = Workspace:FindFirstChild(player.Name)
-            if folder then myRagdolledObj = folder:FindFirstChild("Ragdolled") end
+            if folder then myRagObj = folder:FindFirstChild("Ragdolled") end
         end)
-        if myRagdolledObj and myRagdolledObj.Parent then
-            myRagConn = myRagdolledObj.Changed:Connect(function(val)
-                if phase == "等第二次ragdoll" and val == true then
+        if myRagObj and myRagObj.Parent then
+            myRagConn = myRagObj.Changed:Connect(function(val)
+                if phase == "等二次" and val == true then
                     shouldReset = true
                 end
             end)
         else
-            -- fallback：HumanoidStateChanged
             local char = player.Character
             local hum2 = char and char:FindFirstChildOfClass("Humanoid")
             if hum2 then
                 myRagConn = hum2.StateChanged:Connect(function(_, newState)
-                    if phase == "等第二次ragdoll" then
+                    if phase == "等二次" then
                         if newState == Enum.HumanoidStateType.FallingDown
                         or newState == Enum.HumanoidStateType.Ragdoll then
                             shouldReset = true
@@ -269,7 +276,7 @@ local function runHelpLoopReset(hrp, hum, tgt)
         if not (hrp and hrp.Parent) then break end
         if hum.Health <= 0 then break end
 
-        -- 重新確認 lsbObj 有效
+        -- 補回失效的 lsbObj
         if not lsbObj or not lsbObj.Parent then
             pcall(function()
                 local folder = Workspace:FindFirstChild(player.Name)
@@ -278,30 +285,29 @@ local function runHelpLoopReset(hrp, hum, tgt)
             setupLSBConn()
         end
 
+        -- 觸發重置
         if shouldReset then
             shouldReset = false
-            phase = "正常"
-            if lsbConn   then pcall(function() lsbConn:Disconnect()   end) end
-            if myRagConn then pcall(function() myRagConn:Disconnect()  end) end
+            phase       = "正常"
+            if lsbConn   then pcall(function() lsbConn:Disconnect()  end) end
+            if myRagConn then pcall(function() myRagConn:Disconnect() end) end
             pcall(function() player.Reset:FireServer() end)
             task.wait(0.1)
             break
         end
 
-        -- 「等從 ragdoll 恢復」邏輯
+        -- 階段二：偵測恢復
         if phase == "等恢復" then
-            -- 等到 isRagdolled 變 false（恢復直立）
-            local ragdollState = false
+            local ragNow = false
             pcall(function()
                 local folder = Workspace:FindFirstChild(player.Name)
                 if folder then
                     local rv = folder:FindFirstChild("Ragdolled")
-                    if rv then ragdollState = (rv.Value == true) end
+                    if rv then ragNow = (rv.Value == true) end
                 end
             end)
-            if not ragdollState and not isRagdolled then
-                -- 已從 ragdoll 恢復，進入「等第二次 ragdoll」
-                phase = "等第二次ragdoll"
+            if not ragNow and not isRagdolled then
+                phase = "等二次"
                 setupMyRagConn()
             end
         end
@@ -310,12 +316,12 @@ local function runHelpLoopReset(hrp, hum, tgt)
         task.wait(0.05)
     end
 
-    if lsbConn   then pcall(function() lsbConn:Disconnect()   end) end
-    if myRagConn then pcall(function() myRagConn:Disconnect()  end) end
+    if lsbConn   then pcall(function() lsbConn:Disconnect()  end) end
+    if myRagConn then pcall(function() myRagConn:Disconnect() end) end
 end
 
 -- ============================================================
--- ② 幫助者外層循環（傳送 + 位置保持）
+-- ② 幫助者外層循環（傳送 + 選模式）
 -- ============================================================
 local function runHelpLoop(tgt)
     local function waitAlive(timeout)
@@ -345,10 +351,10 @@ local function runHelpLoop(tgt)
             if not (hrp and hrp.Parent) then return end
             local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
             if tgtRoot then
-                local lookDir = tgtRoot.CFrame.LookVector
-                local newPos  = tgtRoot.Position + lookDir * values.helpDistance
-                local cf      = CFrame.new(newPos, newPos + lookDir)
-                hrp.CFrame    = cf
+                local ld  = tgtRoot.CFrame.LookVector
+                local pos = tgtRoot.Position + ld * values.helpDistance
+                local cf  = CFrame.new(pos, pos + ld)
+                hrp.CFrame         = cf
                 values.fixedCFrame = cf
             end
         end)
@@ -364,7 +370,7 @@ local function runHelpLoop(tgt)
         task.wait(0.5)
         if not toggles.helpTarget then break end
 
-        -- 傳送到目標旁邊
+        -- 傳送到目標前方
         local tpSuccess = false
         local tpStart   = tick()
         while toggles.helpTarget and tick() - tpStart < 5 do
@@ -385,7 +391,7 @@ local function runHelpLoop(tgt)
         local helpDone   = false
         local lobbyStuck = false
 
-        -- 無 Tool 偵測（卡大廳偵測）
+        -- 無工具偵測（卡大廳）
         local noToolTimer  = 0
         local noToolThread = task.spawn(function()
             while not helpDone and toggles.helpTarget do
@@ -408,8 +414,13 @@ local function runHelpLoop(tgt)
             end
         end)
 
+        -- 根據幫助模式選分支
         local helpConn = task.spawn(function()
-            runHelpLoopReset(hrp, hum, tgt)
+            if values.helpMode == "被打後重置" then
+                runHelpLoopReset(hrp, hum, tgt)
+            else
+                runHelpLoopNoReset(hrp, hum, tgt)
+            end
             helpDone = true
         end)
         while not helpDone and toggles.helpTarget do task.wait(0.1) end
@@ -536,14 +547,14 @@ contentBox.Parent             = mainFrame
 
 local function makePage(parent)
     local page = Instance.new("ScrollingFrame")
-    page.Size                = UDim2.new(1, 0, 1, 0)
+    page.Size                 = UDim2.new(1, 0, 1, 0)
     page.BackgroundTransparency = 1
-    page.BorderSizePixel     = 0
-    page.ScrollBarThickness  = 4
+    page.BorderSizePixel      = 0
+    page.ScrollBarThickness   = 4
     page.ScrollBarImageColor3 = THEME.primary
-    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    page.Visible             = false
-    page.Parent              = parent
+    page.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+    page.Visible              = false
+    page.Parent               = parent
     local layout = Instance.new("UIListLayout")
     layout.Padding             = UDim.new(0, 6)
     layout.SortOrder           = Enum.SortOrder.LayoutOrder
@@ -576,7 +587,7 @@ tabInfo.MouseButton1Click:Connect(function()   switchTab(3) end)
 switchTab(1)
 
 -- ============================================================
--- 共用 UI 元件建構函數
+-- 共用 UI 建構函數
 -- ============================================================
 local function makeRow(parent, labelText, statusText, btnText, order)
     local frame = Instance.new("Frame")
@@ -620,6 +631,39 @@ local function makeRow(parent, labelText, statusText, btnText, order)
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
 
     return frame, status, btn
+end
+
+local function makeWideRow(parent, labelText, btnText, btnColor, order)
+    local frame = Instance.new("Frame")
+    frame.Size             = UDim2.new(1, 0, 0, 32)
+    frame.BackgroundColor3 = THEME.bgRow
+    frame.LayoutOrder      = order or 0
+    frame.Parent           = parent
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+
+    local label = Instance.new("TextLabel")
+    label.Size               = UDim2.new(0, 75, 1, 0)
+    label.Position           = UDim2.new(0, 6, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text               = labelText
+    label.TextSize           = 12
+    label.Font               = Enum.Font.GothamBold
+    label.TextColor3         = THEME.textSub
+    label.TextXAlignment     = Enum.TextXAlignment.Left
+    label.Parent             = frame
+
+    local btn = Instance.new("TextButton")
+    btn.Size             = UDim2.new(0, 170, 0, 22)
+    btn.Position         = UDim2.new(0, 82, 0, 5)
+    btn.BackgroundColor3 = btnColor or THEME.primary
+    btn.Text             = btnText
+    btn.TextSize         = 11
+    btn.Font             = Enum.Font.Gotham
+    btn.TextColor3       = Color3.new(1, 1, 1)
+    btn.Parent           = frame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+    return frame, btn
 end
 
 local function makeInputRow(parent, labelText, defaultVal, unitText, inputWidth, order)
@@ -674,8 +718,11 @@ end
 -- ============================================================
 -- ⚔️ 攻擊頁面 UI
 -- ============================================================
-local attackToggleFrame, attackToggleStatus, attackToggleBtn = makeRow(pageAttack, "自動攻擊:", "關閉", "啟動", 1)
-local intervalFrame, intervalInput = makeInputRow(pageAttack, "攻擊間隔:", "1.0", "秒", 80, 2)
+local attackToggleFrame, attackToggleStatus, attackToggleBtn =
+    makeRow(pageAttack, "自動攻擊:", "關閉", "啟動", 1)
+
+local intervalFrame, intervalInput =
+    makeInputRow(pageAttack, "攻擊間隔:", "1.0", "秒", 80, 2)
 
 intervalInput.FocusLost:Connect(function()
     local v = tonumber(intervalInput.Text)
@@ -700,7 +747,7 @@ Instance.new("UICorner", statusLabel).CornerRadius = UDim.new(0, 5)
 
 local function updateStatusBar()
     local active = {}
-    if toggles.autoAttack  then table.insert(active, "攻擊中") end
+    if toggles.autoAttack then table.insert(active, "攻擊中") end
     if toggles.helpTarget  then table.insert(active, "幫助中") end
     if #active > 0 then
         statusLabel.Text       = "✅ " .. table.concat(active, " | ")
@@ -713,16 +760,16 @@ end
 
 local function setRowActive(btn, frame, status, isActive, activeText, inactiveText)
     if isActive then
-        btn.Text             = "解除"
-        btn.BackgroundColor3 = THEME.red
+        btn.Text               = "解除"
+        btn.BackgroundColor3   = THEME.red
         frame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
         if status then
             status.Text       = activeText or "運行中"
             status.TextColor3 = THEME.accent
         end
     else
-        btn.Text             = "啟動"
-        btn.BackgroundColor3 = THEME.primary
+        btn.Text               = "啟動"
+        btn.BackgroundColor3   = THEME.primary
         frame.BackgroundColor3 = THEME.bgRow
         if status then
             status.Text       = inactiveText or "關閉"
@@ -732,7 +779,7 @@ local function setRowActive(btn, frame, status, isActive, activeText, inactiveTe
     updateStatusBar()
 end
 
--- 攻擊開關邏輯
+-- 攻擊開關
 attackToggleBtn.MouseButton1Click:Connect(function()
     if not toggles.autoAttack then
         toggles.autoAttack = true
@@ -749,7 +796,7 @@ end)
 -- 🛡️ 幫助頁面 UI
 -- ============================================================
 
--- 目標輸入區
+-- 目標輸入區（含狀態顯示）
 local helpTgtFrame = Instance.new("Frame")
 helpTgtFrame.Size             = UDim2.new(1, 0, 0, 68)
 helpTgtFrame.BackgroundColor3 = THEME.bgRow
@@ -805,8 +852,8 @@ helpTgtInfo.TextXAlignment    = Enum.TextXAlignment.Left
 helpTgtInfo.TextWrapped       = true
 helpTgtInfo.Parent            = helpTgtFrame
 
--- 設定距離
-local helpDistFrame, helpDistInput = makeInputRow(pageHelp, "設定距離:", "15", "格", 80, 2)
+-- 設定距離（預設 5）
+local helpDistFrame, helpDistInput = makeInputRow(pageHelp, "設定距離:", "5", "格", 80, 2)
 
 helpDistInput.FocusLost:Connect(function()
     local v = tonumber(helpDistInput.Text)
@@ -814,28 +861,45 @@ helpDistInput.FocusLost:Connect(function()
     else helpDistInput.Text = tostring(values.helpDistance) end
 end)
 
--- 傳送後固定位置
-local fixedFrame, fixedStatus, fixedBtn = makeRow(pageHelp, "傳送後固定:", "啟用", "解除", 3)
+-- 幫助模式切換（預設：被打後重置）
+local helpModeFrame, helpModeBtn = makeWideRow(
+    pageHelp, "幫助模式:", "被打後重置",
+    Color3.fromRGB(100, 60, 35), 3
+)
 
--- 初始為啟用
-fixedStatus.Text       = "啟用"
-fixedStatus.TextColor3 = THEME.accent
-fixedBtn.Text              = "解除"
+helpModeBtn.MouseButton1Click:Connect(function()
+    if values.helpMode == "被打後重置" then
+        values.helpMode      = "被打後不重置"
+        helpModeBtn.Text     = "被打後不重置"
+        helpModeBtn.BackgroundColor3 = Color3.fromRGB(35, 100, 60)
+    else
+        values.helpMode      = "被打後重置"
+        helpModeBtn.Text     = "被打後重置"
+        helpModeBtn.BackgroundColor3 = Color3.fromRGB(100, 60, 35)
+    end
+end)
+
+-- 傳送後固定位置（預設啟用）
+local fixedFrame, fixedStatus, fixedBtn = makeRow(pageHelp, "傳送後固定:", "啟用", "解除", 4)
+
+fixedStatus.Text        = "啟用"
+fixedStatus.TextColor3  = THEME.accent
+fixedBtn.Text           = "解除"
 fixedBtn.BackgroundColor3  = THEME.red
 fixedFrame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
 
 fixedBtn.MouseButton1Click:Connect(function()
     toggles.fixedPosHelp = not toggles.fixedPosHelp
     if toggles.fixedPosHelp then
-        fixedStatus.Text       = "啟用"
-        fixedStatus.TextColor3 = THEME.accent
-        fixedBtn.Text              = "解除"
+        fixedStatus.Text        = "啟用"
+        fixedStatus.TextColor3  = THEME.accent
+        fixedBtn.Text           = "解除"
         fixedBtn.BackgroundColor3  = THEME.red
         fixedFrame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
     else
-        fixedStatus.Text       = "關閉"
-        fixedStatus.TextColor3 = THEME.textMuted
-        fixedBtn.Text              = "啟動"
+        fixedStatus.Text        = "關閉"
+        fixedStatus.TextColor3  = THEME.textMuted
+        fixedBtn.Text           = "啟動"
         fixedBtn.BackgroundColor3  = THEME.primary
         fixedFrame.BackgroundColor3 = THEME.bgRow
     end
@@ -854,22 +918,22 @@ helpTgtBtn.MouseButton1Click:Connect(function()
             return
         end
 
-        values.targetPlayer    = tgt
-        helpTgtInfo.Text       = "目標: " .. tgt.Name
+        values.targetPlayer   = tgt
+        helpTgtInfo.Text      = "目標: " .. tgt.Name
         helpTgtInfo.TextColor3 = THEME.accent
 
         threads.helpTarget = task.spawn(function() runHelpLoop(tgt) end)
 
-        helpTgtBtn.Text              = "解除"
-        helpTgtBtn.BackgroundColor3  = THEME.red
+        helpTgtBtn.Text               = "解除"
+        helpTgtBtn.BackgroundColor3   = THEME.red
         helpTgtFrame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
     else
         helpTgtInfo.Text       = "目標: 無"
         helpTgtInfo.TextColor3 = THEME.textMuted
         values.targetPlayer    = nil
         if threads.helpTarget then task.cancel(threads.helpTarget) threads.helpTarget = nil end
-        helpTgtBtn.Text              = "啟動"
-        helpTgtBtn.BackgroundColor3  = THEME.primary
+        helpTgtBtn.Text               = "啟動"
+        helpTgtBtn.BackgroundColor3   = THEME.primary
         helpTgtFrame.BackgroundColor3 = THEME.bgRow
     end
     updateStatusBar()
@@ -911,7 +975,7 @@ infoFontInput.Parent           = infoFontRow
 Instance.new("UICorner", infoFontInput).CornerRadius = UDim.new(0, 5)
 
 local infoTextRow = Instance.new("Frame")
-infoTextRow.Size             = UDim2.new(1, 0, 0, 3000)
+infoTextRow.Size             = UDim2.new(1, 0, 0, 1600)
 infoTextRow.BackgroundColor3 = THEME.bgRow
 infoTextRow.LayoutOrder      = 2
 infoTextRow.Parent           = pageInfo
@@ -922,36 +986,39 @@ infoText.Size              = UDim2.new(1, -16, 1, -16)
 infoText.Position          = UDim2.new(0, 8, 0, 8)
 infoText.BackgroundTransparency = 1
 infoText.Text =
-    "【石像腳本說明】v1.0\n\n" ..
+    "【石像腳本說明】v1.1\n\n" ..
 
     "⚔️ 攻擊分區\n" ..
-    "• 自動攻擊：自動找最近的玩家並發送 GeneralHit 攻擊其 Head\n" ..
-    "  → 對應的是第三任務（殺人 / 攻擊次數）\n" ..
+    "• 自動攻擊：自動找最近玩家，透過 GeneralHit 攻擊其 Head\n" ..
+    "  → 對應第三任務（攻擊 / 殺人次數）\n" ..
     "• 攻擊間隔：每次攻擊之間的等待秒數，最小 0.1 秒\n" ..
-    "  → 間隔調太小可能被伺服器限制，建議保持 1 秒左右\n\n" ..
+    "  → 建議保持 1 秒，太短可能被伺服器限速\n\n" ..
 
     "🛡️ 幫助分區\n" ..
     "• 輸入目標玩家名稱後啟動\n" ..
-    "  → 支援前綴模糊匹配（輸入部分名稱即可）\n" ..
-    "• 流程：\n" ..
+    "  → 支援前綴模糊匹配（輸入部分名稱即可）\n\n" ..
+    "• 基本流程：\n" ..
     "  1. 傳送到 Lobby.Teleport1\n" ..
     "  2. 傳送到目標玩家正前方 N 格\n" ..
     "  3. 記錄當前 CFrame，開始保持位置\n" ..
-    "  4. 若「傳送後固定」開啟，持續把自己鎖在該 CFrame\n" ..
-    "  5. 若「傳送後固定」關閉，改為即時跟隨目標前方位置\n\n" ..
-    "• 幫助判定（進階重置模式）：\n" ..
-    "  步驟一：偵測到 LastSlappedBy == 目標名字\n" ..
-    "  步驟二：等待自己從 ragdoll 中恢復（站起來）\n" ..
-    "  步驟三：再次進入 ragdoll 時，觸發 Reset\n" ..
-    "  → 這樣可確保被打到站起來再打第二下才重置\n" ..
-    "  → 其他玩家打不會觸發，只看目標名字\n\n" ..
-    "• 無工具偵測：若角色超過 0.5 秒沒有 Tool\n" ..
-    "  → 判定為卡在大廳，自動重傳\n\n" ..
+    "  4. 若「傳送後固定」開啟 → 持續鎖定在該 CFrame\n" ..
+    "  5. 若「傳送後固定」關閉 → 即時跟隨目標前方位置\n\n" ..
+    "• 幫助模式 - 被打後不重置：\n" ..
+    "  只保持位置，不論被誰打都繼續留在原地\n\n" ..
+    "• 幫助模式 - 被打後重置（預設）：\n" ..
+    "  進階三段判定，流程如下：\n" ..
+    "  階段一：偵測到 LastSlappedBy == 目標名字\n" ..
+    "  階段二：等待自己從 ragdoll 中恢復（站起來）\n" ..
+    "  階段三：再次進入 ragdoll 時，觸發 Reset\n" ..
+    "  → 確保被打站起來後，第二下打才重置\n" ..
+    "  → 其他玩家打不會觸發，只認目標名字\n\n" ..
+    "• 無工具偵測：角色 0.5 秒內沒有 Tool\n" ..
+    "  → 判定卡在大廳，自動重新傳送\n\n" ..
 
     "📝 其他注意事項\n" ..
     "• ─ 可最小化視窗，X 可關閉腳本\n" ..
-    "• ─ 殺人數任務是你打了目標多少下，不是誰殺死誰\n" ..
-    "  → 所以可以讓小號站著讓你打 250 次再重置\n" ..
+    "• ─ 殺人數任務是你打了目標多少下，不是誰把對方殺死\n" ..
+    "  → 可讓小號站著被打 250 次再重置，效率更高\n" ..
     "• ─ 有 bug 再跟貓玲說 🗿"
 infoText.TextSize          = 12
 infoText.Font              = Enum.Font.Gotham
@@ -1016,10 +1083,10 @@ miniFrame.Visible          = false
 miniFrame.Parent           = screenGui
 Instance.new("UICorner", miniFrame).CornerRadius = UDim.new(0, 6)
 
-local miniStroke = Instance.new("UIStroke")
-miniStroke.Color     = THEME.primaryDark
-miniStroke.Thickness = 1.5
-miniStroke.Parent    = miniFrame
+local miniStroke2 = Instance.new("UIStroke")
+miniStroke2.Color     = THEME.primaryDark
+miniStroke2.Thickness = 1.5
+miniStroke2.Parent    = miniFrame
 
 local miniTitle = Instance.new("TextLabel")
 miniTitle.Text              = "🗿 石像腳本"
@@ -1058,10 +1125,7 @@ end)
 -- ============================================================
 closeBtn.MouseButton1Click:Connect(function()
     for key, t in pairs(threads) do
-        if t then
-            pcall(function() task.cancel(t) end)
-            threads[key] = nil
-        end
+        if t then pcall(function() task.cancel(t) end) threads[key] = nil end
     end
     if ragdolledConn then pcall(function() ragdolledConn:Disconnect() end) end
     screenGui:Destroy()
@@ -1070,4 +1134,4 @@ end)
 -- ============================================================
 -- 初始化完成
 -- ============================================================
-print("🗿 貓玲的石像腳本 v1.0 已載入！")
+print("🗿 貓玲的石像腳本 v1.1 已載入！")
