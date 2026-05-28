@@ -1,0 +1,1073 @@
+-- 貓玲的石像腳本 v1.0
+-- 石頭主題 | 攻擊 / 幫助 / 說明 三分區
+
+local CoreGui          = game:GetService("CoreGui")
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace        = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player    = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ============================================================
+-- 清理舊 GUI
+-- ============================================================
+pcall(function() if CoreGui:FindFirstChild("GolemScriptUI")   then CoreGui.GolemScriptUI:Destroy()   end end)
+pcall(function() if playerGui:FindFirstChild("GolemScriptUI") then playerGui.GolemScriptUI:Destroy() end end)
+pcall(function()
+    if type(gethui) == "function" then
+        local hui = gethui()
+        if hui and hui:FindFirstChild("GolemScriptUI") then hui.GolemScriptUI:Destroy() end
+    end
+end)
+
+-- ============================================================
+-- 石頭主題色
+-- ============================================================
+local THEME = {
+    primary     = Color3.fromRGB(140, 130, 115),
+    primaryDark = Color3.fromRGB( 80,  72,  62),
+    accent      = Color3.fromRGB(210, 200, 185),
+    bg          = Color3.fromRGB( 18,  16,  14),
+    bgPanel     = Color3.fromRGB( 24,  22,  19),
+    bgRow       = Color3.fromRGB( 32,  29,  25),
+    bgInput     = Color3.fromRGB( 42,  38,  33),
+    titleBg     = Color3.fromRGB( 12,  10,   9),
+    tabBg       = Color3.fromRGB( 26,  24,  20),
+    tabActive   = Color3.fromRGB( 60,  55,  46),
+    textMain    = Color3.fromRGB(205, 195, 180),
+    textSub     = Color3.fromRGB(155, 145, 130),
+    textMuted   = Color3.fromRGB( 85,  78,  68),
+    red         = Color3.fromRGB(170,  45,  35),
+    green       = Color3.fromRGB( 55, 130,  55),
+    statusBg    = Color3.fromRGB(  9,   8,   7),
+}
+
+-- ============================================================
+-- 全域狀態
+-- ============================================================
+local toggles = {
+    autoAttack    = false,
+    helpTarget    = false,
+    fixedPosHelp  = true,
+}
+
+local values = {
+    attackInterval  = 1.0,   -- 攻擊間隔（秒）
+    helpDistance    = 15,
+    helpMode        = "被打後重置",  -- 此腳本固定使用進階判定
+    targetPlayer    = nil,
+    fixedCFrame     = nil,
+}
+
+local threads = {
+    autoAttack = nil,
+    helpTarget = nil,
+}
+
+-- Ragdoll 偵測（幫助者用）
+local isRagdolled   = false
+local ragdolledConn = nil
+
+-- ============================================================
+-- Ragdoll 偵測設定
+-- ============================================================
+local function setupRagdollDetection()
+    if ragdolledConn then pcall(function() ragdolledConn:Disconnect() end) end
+    ragdolledConn = nil
+    isRagdolled   = false
+
+    local function tryConnectRagdolledValue()
+        local folder = Workspace:FindFirstChild(player.Name)
+        if folder then
+            local rv = folder:FindFirstChild("Ragdolled")
+            if rv then
+                ragdolledConn = rv.Changed:Connect(function(val)
+                    isRagdolled = (val == true)
+                end)
+                return true
+            end
+        end
+        return false
+    end
+
+    if not tryConnectRagdolledValue() then
+        local char = player.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                ragdolledConn = hum.StateChanged:Connect(function(_, newState)
+                    if newState == Enum.HumanoidStateType.FallingDown
+                    or newState == Enum.HumanoidStateType.Ragdoll then
+                        isRagdolled = true
+                    elseif newState == Enum.HumanoidStateType.GettingUp
+                    or     newState == Enum.HumanoidStateType.Running
+                    or     newState == Enum.HumanoidStateType.Landed then
+                        isRagdolled = false
+                    end
+                end)
+            end
+        end
+    end
+end
+
+player.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    setupRagdollDetection()
+end)
+
+if player.Character then setupRagdollDetection() end
+
+-- ============================================================
+-- 輔助：尋找最近玩家
+-- ============================================================
+local function findClosestPlayer()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    local localCharacter = player.Character
+    if not localCharacter or not localCharacter:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+    local localPosition = localCharacter.HumanoidRootPart.Position
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local distance = (p.Character.HumanoidRootPart.Position - localPosition).Magnitude
+            if distance < shortestDistance then
+                shortestDistance = distance
+                closestPlayer = p
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- ============================================================
+-- 輔助：模糊查玩家
+-- ============================================================
+local function findPlayerByPartialName(input)
+    if not input or input == "" then return nil, "請輸入玩家名稱" end
+    input = input:lower()
+    local matches = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then
+            if p.Name:lower():sub(1, #input) == input
+            or p.DisplayName:lower():sub(1, #input) == input then
+                table.insert(matches, p)
+            end
+        end
+    end
+    if #matches == 0    then return nil, "找不到玩家"
+    elseif #matches > 1 then
+        local names = {}
+        for _, p in ipairs(matches) do table.insert(names, p.Name) end
+        return nil, "找到多個: " .. table.concat(names, ", ")
+    end
+    return matches[1], nil
+end
+
+-- ============================================================
+-- ① 自動攻擊邏輯（第三任務：最近玩家 + GeneralHit）
+-- ============================================================
+local function runAutoAttackLoop()
+    while toggles.autoAttack do
+        local closestPlayer = findClosestPlayer()
+        if closestPlayer and closestPlayer.Character and closestPlayer.Character:FindFirstChild("Head") then
+            pcall(function()
+                ReplicatedStorage.GeneralHit:FireServer(closestPlayer.Character.Head)
+            end)
+        end
+        local interval = math.max(0.1, values.attackInterval)
+        task.wait(interval)
+    end
+end
+
+-- ============================================================
+-- ② 幫助者位置保持：固定 CFrame 或跟隨
+-- ============================================================
+local function applyHelpPosition(hrp, tgt)
+    pcall(function()
+        if toggles.fixedPosHelp and values.fixedCFrame then
+            hrp.CFrame = values.fixedCFrame
+        elseif not toggles.fixedPosHelp then
+            local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+            if tgtRoot then
+                local ld  = tgtRoot.CFrame.LookVector
+                local pos = tgtRoot.Position + ld * values.helpDistance
+                hrp.CFrame = CFrame.new(pos, pos + ld)
+            end
+        end
+    end)
+end
+
+-- ============================================================
+-- ② 幫助者主判定邏輯：
+--    LastSlappedBy == 目標 → 等待從 ragdoll 恢復
+--    → 再次進入 ragdoll 時觸發重置
+-- ============================================================
+local function runHelpLoopReset(hrp, hum, tgt)
+    local lsbObj    = nil
+    local lsbConn   = nil
+    local phase     = "正常"  -- "正常" | "等恢復" | "等第二次ragdoll"
+    local shouldReset = false
+
+    -- 取得 LastSlappedBy 物件
+    pcall(function()
+        local folder = Workspace:FindFirstChild(player.Name)
+        if folder then lsbObj = folder:FindFirstChild("LastSlappedBy") end
+    end)
+
+    local function setupLSBConn()
+        if lsbConn then pcall(function() lsbConn:Disconnect() end) end
+        if not lsbObj or not lsbObj.Parent then return end
+        lsbConn = lsbObj.Changed:Connect(function(newVal)
+            if phase == "正常" then
+                if newVal == tgt.Name or newVal == tgt.DisplayName then
+                    -- 第一次被目標打：進入「等從 ragdoll 恢復」階段
+                    phase = "等恢復"
+                end
+            end
+        end)
+    end
+
+    -- 監聽自己的 ragdoll 狀態（用於判定第二次 ragdoll）
+    local myRagdolledObj = nil
+    local myRagConn      = nil
+    local function setupMyRagConn()
+        if myRagConn then pcall(function() myRagConn:Disconnect() end) end
+        pcall(function()
+            local folder = Workspace:FindFirstChild(player.Name)
+            if folder then myRagdolledObj = folder:FindFirstChild("Ragdolled") end
+        end)
+        if myRagdolledObj and myRagdolledObj.Parent then
+            myRagConn = myRagdolledObj.Changed:Connect(function(val)
+                if phase == "等第二次ragdoll" and val == true then
+                    shouldReset = true
+                end
+            end)
+        else
+            -- fallback：HumanoidStateChanged
+            local char = player.Character
+            local hum2 = char and char:FindFirstChildOfClass("Humanoid")
+            if hum2 then
+                myRagConn = hum2.StateChanged:Connect(function(_, newState)
+                    if phase == "等第二次ragdoll" then
+                        if newState == Enum.HumanoidStateType.FallingDown
+                        or newState == Enum.HumanoidStateType.Ragdoll then
+                            shouldReset = true
+                        end
+                    end
+                end)
+            end
+        end
+    end
+
+    setupLSBConn()
+    setupMyRagConn()
+
+    while toggles.helpTarget do
+        if not (hrp and hrp.Parent) then break end
+        if hum.Health <= 0 then break end
+
+        -- 重新確認 lsbObj 有效
+        if not lsbObj or not lsbObj.Parent then
+            pcall(function()
+                local folder = Workspace:FindFirstChild(player.Name)
+                if folder then lsbObj = folder:FindFirstChild("LastSlappedBy") end
+            end)
+            setupLSBConn()
+        end
+
+        if shouldReset then
+            shouldReset = false
+            phase = "正常"
+            if lsbConn   then pcall(function() lsbConn:Disconnect()   end) end
+            if myRagConn then pcall(function() myRagConn:Disconnect()  end) end
+            pcall(function() player.Reset:FireServer() end)
+            task.wait(0.1)
+            break
+        end
+
+        -- 「等從 ragdoll 恢復」邏輯
+        if phase == "等恢復" then
+            -- 等到 isRagdolled 變 false（恢復直立）
+            local ragdollState = false
+            pcall(function()
+                local folder = Workspace:FindFirstChild(player.Name)
+                if folder then
+                    local rv = folder:FindFirstChild("Ragdolled")
+                    if rv then ragdollState = (rv.Value == true) end
+                end
+            end)
+            if not ragdollState and not isRagdolled then
+                -- 已從 ragdoll 恢復，進入「等第二次 ragdoll」
+                phase = "等第二次ragdoll"
+                setupMyRagConn()
+            end
+        end
+
+        applyHelpPosition(hrp, tgt)
+        task.wait(0.05)
+    end
+
+    if lsbConn   then pcall(function() lsbConn:Disconnect()   end) end
+    if myRagConn then pcall(function() myRagConn:Disconnect()  end) end
+end
+
+-- ============================================================
+-- ② 幫助者外層循環（傳送 + 位置保持）
+-- ============================================================
+local function runHelpLoop(tgt)
+    local function waitAlive(timeout)
+        local t = tick()
+        while tick() - t < (timeout or 15) do
+            if not toggles.helpTarget then return nil, nil end
+            local c = player.Character
+            if c then
+                local hrp = c:FindFirstChild("HumanoidRootPart")
+                local hum = c:FindFirstChildOfClass("Humanoid")
+                if hrp and hum and hum.Health > 0 then return hrp, hum end
+            end
+            task.wait(0.2)
+        end
+        return nil, nil
+    end
+
+    local function teleportToLobby(hrp)
+        pcall(function()
+            local tp1 = Workspace.Lobby and Workspace.Lobby:FindFirstChild("Teleport1")
+            if tp1 and hrp and hrp.Parent then hrp.CFrame = tp1.CFrame end
+        end)
+    end
+
+    local function teleportToTarget(hrp)
+        pcall(function()
+            if not (hrp and hrp.Parent) then return end
+            local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+            if tgtRoot then
+                local lookDir = tgtRoot.CFrame.LookVector
+                local newPos  = tgtRoot.Position + lookDir * values.helpDistance
+                local cf      = CFrame.new(newPos, newPos + lookDir)
+                hrp.CFrame    = cf
+                values.fixedCFrame = cf
+            end
+        end)
+    end
+
+    while toggles.helpTarget do
+        local hrp, hum = waitAlive(15)
+        if not hrp then task.wait(0.5) continue end
+        if not toggles.helpTarget then break end
+
+        values.fixedCFrame = nil
+        teleportToLobby(hrp)
+        task.wait(0.5)
+        if not toggles.helpTarget then break end
+
+        -- 傳送到目標旁邊
+        local tpSuccess = false
+        local tpStart   = tick()
+        while toggles.helpTarget and tick() - tpStart < 5 do
+            teleportToTarget(hrp)
+            pcall(function()
+                local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+                if tgtRoot and hrp and hrp.Parent then
+                    if (tgtRoot.Position - hrp.Position).Magnitude <= values.helpDistance + 5 then
+                        tpSuccess = true
+                    end
+                end
+            end)
+            if tpSuccess then break end
+            task.wait(0.5)
+        end
+        if not toggles.helpTarget or not tpSuccess then continue end
+
+        local helpDone   = false
+        local lobbyStuck = false
+
+        -- 無 Tool 偵測（卡大廳偵測）
+        local noToolTimer  = 0
+        local noToolThread = task.spawn(function()
+            while not helpDone and toggles.helpTarget do
+                local hasTool = false
+                local c = player.Character
+                if c then
+                    for _, v in ipairs(c:GetChildren()) do
+                        if v:IsA("Tool") then hasTool = true break end
+                    end
+                    local bp = player:FindFirstChildOfClass("Backpack")
+                    if bp and not hasTool then
+                        for _, v in ipairs(bp:GetChildren()) do
+                            if v:IsA("Tool") then hasTool = true break end
+                        end
+                    end
+                end
+                noToolTimer = hasTool and 0 or noToolTimer + 0.1
+                if noToolTimer >= 0.5 then lobbyStuck = true helpDone = true end
+                task.wait(0.1)
+            end
+        end)
+
+        local helpConn = task.spawn(function()
+            runHelpLoopReset(hrp, hum, tgt)
+            helpDone = true
+        end)
+        while not helpDone and toggles.helpTarget do task.wait(0.1) end
+        pcall(function() task.cancel(helpConn) end)
+
+        helpDone = true
+        pcall(function() task.cancel(noToolThread) end)
+
+        if lobbyStuck and toggles.helpTarget then
+            teleportToLobby(hrp)
+            task.wait(0.5)
+        end
+    end
+end
+
+-- ============================================================
+-- UI 建構
+-- ============================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name            = "GolemScriptUI"
+screenGui.ResetOnSpawn    = false
+screenGui.IgnoreGuiInset  = true
+screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Global
+screenGui.DisplayOrder    = 10001
+
+local function parentUI(g)
+    local ok = false
+    if not ok then ok = pcall(function()
+        if type(gethui)=="function" then g.Parent = gethui() else error() end
+    end) end
+    if not ok then ok = pcall(function() g.Parent = CoreGui end) end
+    if not ok then g.Parent = playerGui end
+end
+parentUI(screenGui)
+
+-- 主框架
+local mainFrame = Instance.new("Frame")
+mainFrame.Size             = UDim2.new(0, 300, 0, 320)
+mainFrame.Position         = UDim2.new(1, -320, 0, 40)
+mainFrame.BackgroundColor3 = THEME.bg
+mainFrame.BorderSizePixel  = 0
+mainFrame.Parent           = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color     = THEME.primaryDark
+mainStroke.Thickness = 1.5
+mainStroke.Parent    = mainFrame
+
+-- 標題列
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1, 0, 0, 32)
+titleBar.BackgroundColor3 = THEME.titleBg
+titleBar.Parent           = mainFrame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size               = UDim2.new(1, -60, 1, 0)
+titleLabel.Position           = UDim2.new(0, 8, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text               = "🗿 貓玲的石像腳本"
+titleLabel.TextSize           = 14
+titleLabel.Font               = Enum.Font.GothamBold
+titleLabel.TextColor3         = THEME.accent
+titleLabel.TextXAlignment     = Enum.TextXAlignment.Left
+titleLabel.Parent             = titleBar
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size             = UDim2.new(0, 24, 0, 24)
+minimizeBtn.Position         = UDim2.new(1, -54, 0, 4)
+minimizeBtn.BackgroundColor3 = THEME.tabActive
+minimizeBtn.Text             = "─"
+minimizeBtn.TextSize         = 14
+minimizeBtn.Font             = Enum.Font.GothamBold
+minimizeBtn.TextColor3       = THEME.textMain
+minimizeBtn.Parent           = titleBar
+Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 5)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size             = UDim2.new(0, 24, 0, 24)
+closeBtn.Position         = UDim2.new(1, -28, 0, 4)
+closeBtn.BackgroundColor3 = THEME.red
+closeBtn.Text             = "X"
+closeBtn.TextSize         = 13
+closeBtn.Font             = Enum.Font.GothamBold
+closeBtn.TextColor3       = Color3.new(1, 1, 1)
+closeBtn.Parent           = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 5)
+
+-- Tab 列
+local tabBar = Instance.new("Frame")
+tabBar.Size             = UDim2.new(0.9, 0, 0, 28)
+tabBar.Position         = UDim2.new(0.05, 0, 0, 38)
+tabBar.BackgroundColor3 = THEME.tabBg
+tabBar.Parent           = mainFrame
+Instance.new("UICorner", tabBar).CornerRadius = UDim.new(0, 6)
+
+local function createTabBtn(text, idx, total)
+    local w   = 1 / total
+    local btn = Instance.new("TextButton")
+    btn.Size             = UDim2.new(w, -4, 1, -4)
+    btn.Position         = UDim2.new((idx - 1) * w, 2, 0, 2)
+    btn.BackgroundColor3 = THEME.tabBg
+    btn.Text             = text
+    btn.TextSize         = 12
+    btn.Font             = Enum.Font.GothamBold
+    btn.TextColor3       = THEME.textMuted
+    btn.Parent           = tabBar
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+    return btn
+end
+
+local tabAttack = createTabBtn("⚔️ 攻擊", 1, 3)
+local tabHelp   = createTabBtn("🛡️ 幫助", 2, 3)
+local tabInfo   = createTabBtn("📝 說明", 3, 3)
+
+-- 內容容器
+local contentBox = Instance.new("Frame")
+contentBox.Size               = UDim2.new(0.9, 0, 0, 215)
+contentBox.Position           = UDim2.new(0.05, 0, 0, 72)
+contentBox.BackgroundTransparency = 1
+contentBox.ClipsDescendants   = true
+contentBox.Parent             = mainFrame
+
+local function makePage(parent)
+    local page = Instance.new("ScrollingFrame")
+    page.Size                = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel     = 0
+    page.ScrollBarThickness  = 4
+    page.ScrollBarImageColor3 = THEME.primary
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible             = false
+    page.Parent              = parent
+    local layout = Instance.new("UIListLayout")
+    layout.Padding             = UDim.new(0, 6)
+    layout.SortOrder           = Enum.SortOrder.LayoutOrder
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.Parent              = page
+    local pad = Instance.new("UIPadding")
+    pad.PaddingRight = UDim.new(0, 6)
+    pad.Parent       = page
+    return page
+end
+
+local pageAttack = makePage(contentBox)
+local pageHelp   = makePage(contentBox)
+local pageInfo   = makePage(contentBox)
+pageAttack.Visible = true
+
+local function switchTab(n)
+    pageAttack.Visible = (n == 1)
+    pageHelp.Visible   = (n == 2)
+    pageInfo.Visible   = (n == 3)
+    local tabs = {tabAttack, tabHelp, tabInfo}
+    for i, t in ipairs(tabs) do
+        t.BackgroundColor3 = (i == n) and THEME.tabActive or THEME.tabBg
+        t.TextColor3       = (i == n) and THEME.textMain  or THEME.textMuted
+    end
+end
+tabAttack.MouseButton1Click:Connect(function() switchTab(1) end)
+tabHelp.MouseButton1Click:Connect(function()   switchTab(2) end)
+tabInfo.MouseButton1Click:Connect(function()   switchTab(3) end)
+switchTab(1)
+
+-- ============================================================
+-- 共用 UI 元件建構函數
+-- ============================================================
+local function makeRow(parent, labelText, statusText, btnText, order)
+    local frame = Instance.new("Frame")
+    frame.Size             = UDim2.new(1, 0, 0, 32)
+    frame.BackgroundColor3 = THEME.bgRow
+    frame.LayoutOrder      = order or 0
+    frame.Parent           = parent
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+
+    local label = Instance.new("TextLabel")
+    label.Size               = UDim2.new(0, 95, 1, 0)
+    label.Position           = UDim2.new(0, 6, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text               = labelText
+    label.TextSize           = 12
+    label.Font               = Enum.Font.GothamBold
+    label.TextColor3         = THEME.textSub
+    label.TextXAlignment     = Enum.TextXAlignment.Left
+    label.Parent             = frame
+
+    local status = Instance.new("TextLabel")
+    status.Size              = UDim2.new(0, 60, 0, 22)
+    status.Position          = UDim2.new(0, 100, 0, 5)
+    status.BackgroundTransparency = 1
+    status.Text              = statusText or "關閉"
+    status.TextSize          = 11
+    status.Font              = Enum.Font.Gotham
+    status.TextColor3        = THEME.textMuted
+    status.TextXAlignment    = Enum.TextXAlignment.Left
+    status.Parent            = frame
+
+    local btn = Instance.new("TextButton")
+    btn.Size             = UDim2.new(0, 50, 0, 22)
+    btn.Position         = UDim2.new(1, -55, 0, 5)
+    btn.BackgroundColor3 = THEME.primary
+    btn.Text             = btnText or "啟動"
+    btn.TextSize         = 12
+    btn.Font             = Enum.Font.GothamBold
+    btn.TextColor3       = Color3.new(1, 1, 1)
+    btn.Parent           = frame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+    return frame, status, btn
+end
+
+local function makeInputRow(parent, labelText, defaultVal, unitText, inputWidth, order)
+    local frame = Instance.new("Frame")
+    frame.Size             = UDim2.new(1, 0, 0, 32)
+    frame.BackgroundColor3 = THEME.bgRow
+    frame.LayoutOrder      = order or 0
+    frame.Parent           = parent
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+
+    local label = Instance.new("TextLabel")
+    label.Size               = UDim2.new(0, 85, 1, 0)
+    label.Position           = UDim2.new(0, 6, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text               = labelText
+    label.TextSize           = 12
+    label.Font               = Enum.Font.GothamBold
+    label.TextColor3         = THEME.textSub
+    label.TextXAlignment     = Enum.TextXAlignment.Left
+    label.Parent             = frame
+
+    local input = Instance.new("TextBox")
+    input.Size             = UDim2.new(0, inputWidth or 100, 0, 22)
+    input.Position         = UDim2.new(0, 92, 0, 5)
+    input.BackgroundColor3 = THEME.bgInput
+    input.BorderSizePixel  = 1
+    input.BorderColor3     = THEME.primaryDark
+    input.Text             = defaultVal
+    input.TextSize         = 12
+    input.Font             = Enum.Font.Gotham
+    input.TextColor3       = THEME.textMain
+    input.ClipsDescendants = true
+    input.Parent           = frame
+    Instance.new("UICorner", input).CornerRadius = UDim.new(0, 5)
+
+    if unitText and unitText ~= "" then
+        local unit = Instance.new("TextLabel")
+        unit.Size              = UDim2.new(0, 30, 0, 22)
+        unit.Position          = UDim2.new(0, 92 + (inputWidth or 100) + 4, 0, 5)
+        unit.BackgroundTransparency = 1
+        unit.Text              = unitText
+        unit.TextSize          = 12
+        unit.Font              = Enum.Font.Gotham
+        unit.TextColor3        = THEME.textMuted
+        unit.TextXAlignment    = Enum.TextXAlignment.Left
+        unit.Parent            = frame
+    end
+
+    return frame, input
+end
+
+-- ============================================================
+-- ⚔️ 攻擊頁面 UI
+-- ============================================================
+local attackToggleFrame, attackToggleStatus, attackToggleBtn = makeRow(pageAttack, "自動攻擊:", "關閉", "啟動", 1)
+local intervalFrame, intervalInput = makeInputRow(pageAttack, "攻擊間隔:", "1.0", "秒", 80, 2)
+
+intervalInput.FocusLost:Connect(function()
+    local v = tonumber(intervalInput.Text)
+    if v and v >= 0.1 then
+        values.attackInterval = v
+    else
+        intervalInput.Text = tostring(values.attackInterval)
+    end
+end)
+
+-- 狀態列
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size             = UDim2.new(0.9, 0, 0, 24)
+statusLabel.Position         = UDim2.new(0.05, 0, 1, -30)
+statusLabel.BackgroundColor3 = THEME.statusBg
+statusLabel.Text             = "系統就緒"
+statusLabel.TextSize         = 11
+statusLabel.Font             = Enum.Font.GothamBold
+statusLabel.TextColor3       = THEME.primary
+statusLabel.Parent           = mainFrame
+Instance.new("UICorner", statusLabel).CornerRadius = UDim.new(0, 5)
+
+local function updateStatusBar()
+    local active = {}
+    if toggles.autoAttack  then table.insert(active, "攻擊中") end
+    if toggles.helpTarget  then table.insert(active, "幫助中") end
+    if #active > 0 then
+        statusLabel.Text       = "✅ " .. table.concat(active, " | ")
+        statusLabel.TextColor3 = THEME.accent
+    else
+        statusLabel.Text       = "系統就緒"
+        statusLabel.TextColor3 = THEME.primary
+    end
+end
+
+local function setRowActive(btn, frame, status, isActive, activeText, inactiveText)
+    if isActive then
+        btn.Text             = "解除"
+        btn.BackgroundColor3 = THEME.red
+        frame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
+        if status then
+            status.Text       = activeText or "運行中"
+            status.TextColor3 = THEME.accent
+        end
+    else
+        btn.Text             = "啟動"
+        btn.BackgroundColor3 = THEME.primary
+        frame.BackgroundColor3 = THEME.bgRow
+        if status then
+            status.Text       = inactiveText or "關閉"
+            status.TextColor3 = THEME.textMuted
+        end
+    end
+    updateStatusBar()
+end
+
+-- 攻擊開關邏輯
+attackToggleBtn.MouseButton1Click:Connect(function()
+    if not toggles.autoAttack then
+        toggles.autoAttack = true
+        threads.autoAttack = task.spawn(runAutoAttackLoop)
+        setRowActive(attackToggleBtn, attackToggleFrame, attackToggleStatus, true, "攻擊中", "關閉")
+    else
+        toggles.autoAttack = false
+        if threads.autoAttack then task.cancel(threads.autoAttack) threads.autoAttack = nil end
+        setRowActive(attackToggleBtn, attackToggleFrame, attackToggleStatus, false, "攻擊中", "關閉")
+    end
+end)
+
+-- ============================================================
+-- 🛡️ 幫助頁面 UI
+-- ============================================================
+
+-- 目標輸入區
+local helpTgtFrame = Instance.new("Frame")
+helpTgtFrame.Size             = UDim2.new(1, 0, 0, 68)
+helpTgtFrame.BackgroundColor3 = THEME.bgRow
+helpTgtFrame.LayoutOrder      = 1
+helpTgtFrame.Parent           = pageHelp
+Instance.new("UICorner", helpTgtFrame).CornerRadius = UDim.new(0, 6)
+
+local helpTgtLabel = Instance.new("TextLabel")
+helpTgtLabel.Text              = "幫助目標:"
+helpTgtLabel.Size              = UDim2.new(0, 85, 0, 28)
+helpTgtLabel.Position          = UDim2.new(0, 6, 0, 4)
+helpTgtLabel.BackgroundTransparency = 1
+helpTgtLabel.Font              = Enum.Font.GothamBold
+helpTgtLabel.TextSize          = 12
+helpTgtLabel.TextColor3        = THEME.textSub
+helpTgtLabel.TextXAlignment    = Enum.TextXAlignment.Left
+helpTgtLabel.Parent            = helpTgtFrame
+
+local helpTgtInput = Instance.new("TextBox")
+helpTgtInput.Size              = UDim2.new(0, 75, 0, 22)
+helpTgtInput.Position          = UDim2.new(0, 92, 0, 7)
+helpTgtInput.BackgroundColor3  = THEME.bgInput
+helpTgtInput.BorderSizePixel   = 1
+helpTgtInput.BorderColor3      = THEME.primaryDark
+helpTgtInput.Text              = ""
+helpTgtInput.PlaceholderText   = "玩家名"
+helpTgtInput.TextSize          = 12
+helpTgtInput.Font              = Enum.Font.Gotham
+helpTgtInput.TextColor3        = THEME.textMain
+helpTgtInput.Parent            = helpTgtFrame
+Instance.new("UICorner", helpTgtInput).CornerRadius = UDim.new(0, 5)
+
+local helpTgtBtn = Instance.new("TextButton")
+helpTgtBtn.Size              = UDim2.new(0, 50, 0, 22)
+helpTgtBtn.Position          = UDim2.new(1, -55, 0, 7)
+helpTgtBtn.BackgroundColor3  = THEME.primary
+helpTgtBtn.Text              = "啟動"
+helpTgtBtn.TextSize          = 12
+helpTgtBtn.Font              = Enum.Font.GothamBold
+helpTgtBtn.TextColor3        = Color3.new(1, 1, 1)
+helpTgtBtn.Parent            = helpTgtFrame
+Instance.new("UICorner", helpTgtBtn).CornerRadius = UDim.new(0, 5)
+
+local helpTgtInfo = Instance.new("TextLabel")
+helpTgtInfo.Size              = UDim2.new(1, -12, 0, 28)
+helpTgtInfo.Position          = UDim2.new(0, 6, 0, 36)
+helpTgtInfo.BackgroundTransparency = 1
+helpTgtInfo.Text              = "目標: 無"
+helpTgtInfo.TextSize          = 11
+helpTgtInfo.Font              = Enum.Font.Gotham
+helpTgtInfo.TextColor3        = THEME.textMuted
+helpTgtInfo.TextXAlignment    = Enum.TextXAlignment.Left
+helpTgtInfo.TextWrapped       = true
+helpTgtInfo.Parent            = helpTgtFrame
+
+-- 設定距離
+local helpDistFrame, helpDistInput = makeInputRow(pageHelp, "設定距離:", "15", "格", 80, 2)
+
+helpDistInput.FocusLost:Connect(function()
+    local v = tonumber(helpDistInput.Text)
+    if v and v > 0 then values.helpDistance = v
+    else helpDistInput.Text = tostring(values.helpDistance) end
+end)
+
+-- 傳送後固定位置
+local fixedFrame, fixedStatus, fixedBtn = makeRow(pageHelp, "傳送後固定:", "啟用", "解除", 3)
+
+-- 初始為啟用
+fixedStatus.Text       = "啟用"
+fixedStatus.TextColor3 = THEME.accent
+fixedBtn.Text              = "解除"
+fixedBtn.BackgroundColor3  = THEME.red
+fixedFrame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
+
+fixedBtn.MouseButton1Click:Connect(function()
+    toggles.fixedPosHelp = not toggles.fixedPosHelp
+    if toggles.fixedPosHelp then
+        fixedStatus.Text       = "啟用"
+        fixedStatus.TextColor3 = THEME.accent
+        fixedBtn.Text              = "解除"
+        fixedBtn.BackgroundColor3  = THEME.red
+        fixedFrame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
+    else
+        fixedStatus.Text       = "關閉"
+        fixedStatus.TextColor3 = THEME.textMuted
+        fixedBtn.Text              = "啟動"
+        fixedBtn.BackgroundColor3  = THEME.primary
+        fixedFrame.BackgroundColor3 = THEME.bgRow
+    end
+end)
+
+-- 幫助開關邏輯
+helpTgtBtn.MouseButton1Click:Connect(function()
+    toggles.helpTarget = not toggles.helpTarget
+
+    if toggles.helpTarget then
+        local tgt, err = findPlayerByPartialName(helpTgtInput.Text)
+        if not tgt then
+            helpTgtInfo.Text       = err or "找不到玩家"
+            helpTgtInfo.TextColor3 = THEME.red
+            toggles.helpTarget     = false
+            return
+        end
+
+        values.targetPlayer    = tgt
+        helpTgtInfo.Text       = "目標: " .. tgt.Name
+        helpTgtInfo.TextColor3 = THEME.accent
+
+        threads.helpTarget = task.spawn(function() runHelpLoop(tgt) end)
+
+        helpTgtBtn.Text              = "解除"
+        helpTgtBtn.BackgroundColor3  = THEME.red
+        helpTgtFrame.BackgroundColor3 = Color3.fromRGB(22, 19, 16)
+    else
+        helpTgtInfo.Text       = "目標: 無"
+        helpTgtInfo.TextColor3 = THEME.textMuted
+        values.targetPlayer    = nil
+        if threads.helpTarget then task.cancel(threads.helpTarget) threads.helpTarget = nil end
+        helpTgtBtn.Text              = "啟動"
+        helpTgtBtn.BackgroundColor3  = THEME.primary
+        helpTgtFrame.BackgroundColor3 = THEME.bgRow
+    end
+    updateStatusBar()
+end)
+
+-- ============================================================
+-- 📝 說明頁面 UI
+-- ============================================================
+local infoFontRow = Instance.new("Frame")
+infoFontRow.Size             = UDim2.new(1, 0, 0, 32)
+infoFontRow.BackgroundColor3 = THEME.bgRow
+infoFontRow.LayoutOrder      = 1
+infoFontRow.Parent           = pageInfo
+Instance.new("UICorner", infoFontRow).CornerRadius = UDim.new(0, 6)
+
+local infoFontLabel = Instance.new("TextLabel")
+infoFontLabel.Text              = "字體大小:"
+infoFontLabel.Size              = UDim2.new(0, 80, 1, 0)
+infoFontLabel.Position          = UDim2.new(0, 6, 0, 0)
+infoFontLabel.BackgroundTransparency = 1
+infoFontLabel.Font              = Enum.Font.GothamBold
+infoFontLabel.TextSize          = 12
+infoFontLabel.TextColor3        = THEME.textSub
+infoFontLabel.TextXAlignment    = Enum.TextXAlignment.Left
+infoFontLabel.TextYAlignment    = Enum.TextYAlignment.Center
+infoFontLabel.Parent            = infoFontRow
+
+local infoFontInput = Instance.new("TextBox")
+infoFontInput.Size             = UDim2.new(0, 55, 0, 22)
+infoFontInput.Position         = UDim2.new(0, 88, 0, 5)
+infoFontInput.BackgroundColor3 = THEME.bgInput
+infoFontInput.BorderSizePixel  = 1
+infoFontInput.BorderColor3     = THEME.primaryDark
+infoFontInput.Text             = "12"
+infoFontInput.TextSize         = 12
+infoFontInput.Font             = Enum.Font.Gotham
+infoFontInput.TextColor3       = THEME.textMain
+infoFontInput.Parent           = infoFontRow
+Instance.new("UICorner", infoFontInput).CornerRadius = UDim.new(0, 5)
+
+local infoTextRow = Instance.new("Frame")
+infoTextRow.Size             = UDim2.new(1, 0, 0, 3000)
+infoTextRow.BackgroundColor3 = THEME.bgRow
+infoTextRow.LayoutOrder      = 2
+infoTextRow.Parent           = pageInfo
+Instance.new("UICorner", infoTextRow).CornerRadius = UDim.new(0, 6)
+
+local infoText = Instance.new("TextLabel")
+infoText.Size              = UDim2.new(1, -16, 1, -16)
+infoText.Position          = UDim2.new(0, 8, 0, 8)
+infoText.BackgroundTransparency = 1
+infoText.Text =
+    "【石像腳本說明】v1.0\n\n" ..
+
+    "⚔️ 攻擊分區\n" ..
+    "• 自動攻擊：自動找最近的玩家並發送 GeneralHit 攻擊其 Head\n" ..
+    "  → 對應的是第三任務（殺人 / 攻擊次數）\n" ..
+    "• 攻擊間隔：每次攻擊之間的等待秒數，最小 0.1 秒\n" ..
+    "  → 間隔調太小可能被伺服器限制，建議保持 1 秒左右\n\n" ..
+
+    "🛡️ 幫助分區\n" ..
+    "• 輸入目標玩家名稱後啟動\n" ..
+    "  → 支援前綴模糊匹配（輸入部分名稱即可）\n" ..
+    "• 流程：\n" ..
+    "  1. 傳送到 Lobby.Teleport1\n" ..
+    "  2. 傳送到目標玩家正前方 N 格\n" ..
+    "  3. 記錄當前 CFrame，開始保持位置\n" ..
+    "  4. 若「傳送後固定」開啟，持續把自己鎖在該 CFrame\n" ..
+    "  5. 若「傳送後固定」關閉，改為即時跟隨目標前方位置\n\n" ..
+    "• 幫助判定（進階重置模式）：\n" ..
+    "  步驟一：偵測到 LastSlappedBy == 目標名字\n" ..
+    "  步驟二：等待自己從 ragdoll 中恢復（站起來）\n" ..
+    "  步驟三：再次進入 ragdoll 時，觸發 Reset\n" ..
+    "  → 這樣可確保被打到站起來再打第二下才重置\n" ..
+    "  → 其他玩家打不會觸發，只看目標名字\n\n" ..
+    "• 無工具偵測：若角色超過 0.5 秒沒有 Tool\n" ..
+    "  → 判定為卡在大廳，自動重傳\n\n" ..
+
+    "📝 其他注意事項\n" ..
+    "• ─ 可最小化視窗，X 可關閉腳本\n" ..
+    "• ─ 殺人數任務是你打了目標多少下，不是誰殺死誰\n" ..
+    "  → 所以可以讓小號站著讓你打 250 次再重置\n" ..
+    "• ─ 有 bug 再跟貓玲說 🗿"
+infoText.TextSize          = 12
+infoText.Font              = Enum.Font.Gotham
+infoText.TextColor3        = THEME.textMain
+infoText.TextXAlignment    = Enum.TextXAlignment.Left
+infoText.TextYAlignment    = Enum.TextYAlignment.Top
+infoText.TextWrapped       = true
+infoText.LineHeight        = 1.35
+infoText.Parent            = infoTextRow
+
+infoFontInput.FocusLost:Connect(function()
+    local v = tonumber(infoFontInput.Text)
+    v = v and math.clamp(v, 8, 24) or 12
+    infoFontInput.Text = tostring(v)
+    infoText.TextSize  = v
+end)
+
+-- ============================================================
+-- 拖曳
+-- ============================================================
+local function enableDrag(frame, handle)
+    local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
+    local function update(input)
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then update(input) end
+    end)
+end
+
+enableDrag(mainFrame, titleBar)
+
+-- ============================================================
+-- 最小化 / 還原
+-- ============================================================
+local miniFrame = Instance.new("Frame")
+miniFrame.Size             = UDim2.new(0, 180, 0, 32)
+miniFrame.Position         = UDim2.new(0.5, -90, 0, 30)
+miniFrame.BackgroundColor3 = THEME.titleBg
+miniFrame.Visible          = false
+miniFrame.Parent           = screenGui
+Instance.new("UICorner", miniFrame).CornerRadius = UDim.new(0, 6)
+
+local miniStroke = Instance.new("UIStroke")
+miniStroke.Color     = THEME.primaryDark
+miniStroke.Thickness = 1.5
+miniStroke.Parent    = miniFrame
+
+local miniTitle = Instance.new("TextLabel")
+miniTitle.Text              = "🗿 石像腳本"
+miniTitle.Size              = UDim2.new(1, -36, 1, 0)
+miniTitle.Position          = UDim2.new(0, 0, 0, 0)
+miniTitle.BackgroundTransparency = 1
+miniTitle.Font              = Enum.Font.GothamBold
+miniTitle.TextSize          = 13
+miniTitle.TextColor3        = THEME.accent
+miniTitle.TextXAlignment    = Enum.TextXAlignment.Center
+miniTitle.Parent            = miniFrame
+
+local expandBtn = Instance.new("TextButton")
+expandBtn.Text             = "+"
+expandBtn.Size             = UDim2.new(0, 24, 0, 24)
+expandBtn.Position         = UDim2.new(1, -28, 0, 4)
+expandBtn.BackgroundColor3 = THEME.primary
+expandBtn.TextColor3       = Color3.new(1, 1, 1)
+expandBtn.Font             = Enum.Font.GothamBold
+expandBtn.Parent           = miniFrame
+Instance.new("UICorner", expandBtn).CornerRadius = UDim.new(0, 5)
+
+enableDrag(miniFrame, miniFrame)
+
+minimizeBtn.MouseButton1Click:Connect(function()
+    mainFrame.Visible = false
+    miniFrame.Visible = true
+end)
+expandBtn.MouseButton1Click:Connect(function()
+    miniFrame.Visible = false
+    mainFrame.Visible = true
+end)
+
+-- ============================================================
+-- 關閉按鈕
+-- ============================================================
+closeBtn.MouseButton1Click:Connect(function()
+    for key, t in pairs(threads) do
+        if t then
+            pcall(function() task.cancel(t) end)
+            threads[key] = nil
+        end
+    end
+    if ragdolledConn then pcall(function() ragdolledConn:Disconnect() end) end
+    screenGui:Destroy()
+end)
+
+-- ============================================================
+-- 初始化完成
+-- ============================================================
+print("🗿 貓玲的石像腳本 v1.0 已載入！")
