@@ -1,4 +1,4 @@
--- 貓玲的石像腳本 v1.2
+-- 貓玲的石像腳本 v1.3
 -- 石頭主題 | 攻擊 / 幫助 / 說明 三分區
 
 local CoreGui           = game:GetService("CoreGui")
@@ -213,53 +213,91 @@ end
 --    階段一「正常」  → LastSlappedBy 變成目標名字
 --    階段二「等恢復」→ 等自己從 ragdoll 站起來
 --    階段三「等二次」→ 再次進入 ragdoll 時觸發 Reset
--- ============================================================
-local function runHelpLoopReset(hrp, hum, tgt)
-    local lsbObj   = nil
-    local lsbConn  = nil
-    local phase    = "正常"
+-- ===========================================================local function runHelpLoopReset(hrp, hum, tgt)
+    local lsbObj  = nil
+    local lsbConn = nil
+    local phase   = "正常"
+
+    local function log(msg)
+        print("[石像幫助] " .. tostring(msg))
+    end
 
     -- 取得 LastSlappedBy
     pcall(function()
         local folder = Workspace:FindFirstChild(player.Name)
-        if folder then lsbObj = folder:FindFirstChild("LastSlappedBy") end
+        if folder then
+            lsbObj = folder:FindFirstChild("LastSlappedBy")
+            log("LSB 物件找到: " .. tostring(lsbObj ~= nil))
+            if lsbObj then
+                log("LSB 目前值: " .. tostring(lsbObj.Value))
+            end
+        else
+            log("⚠ 找不到 Workspace." .. player.Name)
+        end
     end)
 
     local function setupLSBConn()
         if lsbConn then pcall(function() lsbConn:Disconnect() end) end
-        if not lsbObj or not lsbObj.Parent then return end
+        if not lsbObj or not lsbObj.Parent then
+            log("⚠ setupLSBConn：lsbObj 無效")
+            return
+        end
         lsbConn = lsbObj.Changed:Connect(function(newVal)
+            log("LSB 變更 → " .. tostring(newVal) .. "（目前階段：" .. phase .. "）")
             if phase == "正常" then
                 if newVal == tgt.Name or newVal == tgt.DisplayName then
+                    log("✅ 階段切換：正常 → 等恢復")
                     phase = "等恢復"
+                else
+                    log("（LSB 不是目標，忽略）")
                 end
             end
         end)
+        log("LSB.Changed 連線完成")
     end
 
-    -- 輔助：直接讀 Workspace.玩家名.Ragdolled.Value
+    -- 直接讀 Workspace.玩家名.Ragdolled.Value
     local function getRagdolled()
         local val = false
+        local reason = "預設 false"
         pcall(function()
             local folder = Workspace:FindFirstChild(player.Name)
             if folder then
                 local rv = folder:FindFirstChild("Ragdolled")
-                if rv then val = (rv.Value == true) end
+                if rv then
+                    val    = (rv.Value == true)
+                    reason = "Ragdolled.Value = " .. tostring(rv.Value)
+                else
+                    reason = "找不到 Ragdolled 物件"
+                end
+            else
+                reason = "找不到 Workspace." .. player.Name
             end
         end)
-        return val
+        return val, reason
     end
 
     setupLSBConn()
 
-    local prevRagdolled = getRagdolled()
+    local prevRagdolled, prevReason = getRagdolled()
+    log("初始 Ragdolled 狀態: " .. tostring(prevRagdolled) .. "（" .. prevReason .. "）")
+    log("幫助目標: " .. tgt.Name .. " | 模式: 被打後重置 | 開始主循環")
+
+    local logThrottle = 0
 
     while toggles.helpTarget do
-        if not (hrp and hrp.Parent) then break end
-        if hum.Health <= 0 then break end
+        if not (hrp and hrp.Parent) then
+            log("⚠ hrp 失效，退出")
+            break
+        end
+        if hum.Health <= 0 then
+            log("⚠ 血量歸零，退出")
+            break
+        end
 
         -- 補回失效的 lsbObj
         if not lsbObj or not lsbObj.Parent then
+            log("⚠ lsbObj 失效，嘗試重新取得")
             pcall(function()
                 local folder = Workspace:FindFirstChild(player.Name)
                 if folder then lsbObj = folder:FindFirstChild("LastSlappedBy") end
@@ -267,23 +305,42 @@ local function runHelpLoopReset(hrp, hum, tgt)
             setupLSBConn()
         end
 
-        local nowRagdolled = getRagdolled()
+        local nowRagdolled, nowReason = getRagdolled()
+
+        -- 每 2 秒印一次當前狀態（避免洗版）
+        logThrottle = logThrottle + 0.05
+        if logThrottle >= 2 then
+            logThrottle = 0
+            local lsbVal = "N/A"
+            pcall(function()
+                if lsbObj and lsbObj.Parent then
+                    lsbVal = tostring(lsbObj.Value)
+                end
+            end)
+            log("心跳 | 階段: " .. phase
+                .. " | Ragdolled: " .. tostring(nowRagdolled)
+                .. " | LSB: " .. lsbVal)
+        end
 
         if phase == "等恢復" then
-            -- 等自己從 ragdoll 站起來（Ragdolled 變 false）
-            if not nowRagdolled then
+            if nowRagdolled and not prevRagdolled then
+                log("（等恢復中：偵測到 ragdoll 上升緣，仍在倒地中）")
+            elseif not nowRagdolled then
+                log("✅ 階段切換：等恢復 → 等二次（Ragdolled 變 false）")
                 phase = "等二次"
             end
 
         elseif phase == "等二次" then
-            -- 主動偵測 Ragdolled 從 false → true（上升緣）
             if nowRagdolled and not prevRagdolled then
-                -- 觸發重置
+                log("✅ 偵測到二次 Ragdolled 上升緣 → 觸發 Reset")
                 phase = "正常"
                 if lsbConn then pcall(function() lsbConn:Disconnect() end) end
                 pcall(function() player.Reset:FireServer() end)
                 task.wait(0.1)
                 break
+            end
+            if nowRagdolled ~= prevRagdolled then
+                log("Ragdolled 變化：" .. tostring(prevRagdolled) .. " → " .. tostring(nowRagdolled))
             end
         end
 
@@ -292,6 +349,7 @@ local function runHelpLoopReset(hrp, hum, tgt)
         task.wait(0.05)
     end
 
+    log("主循環結束，最終階段: " .. phase)
     if lsbConn then pcall(function() lsbConn:Disconnect() end) end
 end
 
