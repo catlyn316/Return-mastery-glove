@@ -1,4 +1,4 @@
--- 貓玲的靈魂精通腳本 v1.1
+-- 貓玲的靈魂精通腳本 v1.2
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -1111,6 +1111,28 @@ helpTargetButton.MouseButton1Click:Connect(function()
 
         connections.helpTarget = task.spawn(function()
 
+            -- ============================================================
+            -- v1.2 修改：全程無工具偵測執行緒
+            -- 不論死亡、傳送中、幫助迴圈執行中，只要 toggles.helpTarget 為 true
+            -- 持續監控。累計 0.5 秒沒有 Tool → 觸發重置。
+            -- ============================================================
+            local noToolResetFlag = false   -- 讓外層流程知道要執行重置
+            local noToolWatchThread = task.spawn(function()
+                local noToolTimer = 0
+                while toggles.helpTarget do
+                    if hasTool() then
+                        noToolTimer = 0     -- 有工具就歸零
+                    else
+                        noToolTimer = noToolTimer + 0.1
+                        if noToolTimer >= 0.5 then
+                            noToolResetFlag = true
+                            noToolTimer = 0  -- 歸零，避免重複觸發太快
+                        end
+                    end
+                    task.wait(0.1)
+                end
+            end)
+
             local function waitForAliveCharacter(timeout)
                 local t = tick()
                 while tick() - t < (timeout or 15) do
@@ -1154,37 +1176,39 @@ helpTargetButton.MouseButton1Click:Connect(function()
             while toggles.helpTarget do
                 local tgt = values.targetPlayer
 
+                -- 若全程偵測執行緒已觸發旗標，先執行重置再重跑
+                if noToolResetFlag then
+                    noToolResetFlag = false
+                    statusLabel.Text = "⚠️ 無工具偵測，重置中..."
+                    statusLabel.TextColor3 = THEME.red
+                    pcall(function() Players.LocalPlayer.Reset:FireServer() end)
+                    task.wait(1)
+                    continue
+                end
+
                 local _, hrp, hum = waitForAliveCharacter(15)
                 if not hrp then task.wait(0.5) continue end
                 if not toggles.helpTarget then break end
+
+                -- 同樣在等待角色期間也可能觸發旗標，檢查一次
+                if noToolResetFlag then
+                    noToolResetFlag = false
+                    statusLabel.Text = "⚠️ 無工具偵測，重置中..."
+                    statusLabel.TextColor3 = THEME.red
+                    pcall(function() Players.LocalPlayer.Reset:FireServer() end)
+                    task.wait(1)
+                    continue
+                end
 
                 teleportToLobby(hrp)
                 task.wait(0.5)
                 if not toggles.helpTarget then break end
 
-                -- ── 大廳卡住偵測 ────────────────────────────────────
-                -- 死後重生進大廳，若持續 0.5 秒都沒有 Tool → 視為卡住
-                local helpDone    = false
-                local lobbyStuck  = false
-                local noToolTimer = 0
-
-                local noToolThread = task.spawn(function()
-                    while not helpDone and toggles.helpTarget do
-                        noToolTimer = hasTool() and 0 or noToolTimer + 0.1
-                        if noToolTimer >= 0.5 then
-                            lobbyStuck = true
-                            helpDone   = true
-                        end
-                        task.wait(0.1)
-                    end
-                end)
-                -- ────────────────────────────────────────────────────
-
-                -- 傳送到目標，若 5 秒內沒成功或偵測到卡住則重新開始流程
+                -- 傳送到目標（最多 5 秒），期間持續檢查全程偵測旗標
                 local teleportSuccess = false
                 local tpStart = tick()
                 while toggles.helpTarget and tick() - tpStart < 5 do
-                    if helpDone then break end  -- 卡住偵測提前中止
+                    if noToolResetFlag then break end
                     teleportToTarget(hrp, tgt)
                     pcall(function()
                         local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
@@ -1198,25 +1222,20 @@ helpTargetButton.MouseButton1Click:Connect(function()
                     task.wait(0.5)
                 end
 
-                -- 偵測執行緒收尾
-                helpDone = true
-                task.cancel(noToolThread)
-                noToolThread = nil
-
                 if not toggles.helpTarget then break end
 
-                -- 卡住：重置後重跑整個流程
-                if lobbyStuck then
-                    statusLabel.Text = "⚠️ 大廳卡住，重置中..."
+                -- 傳送期間被全程偵測觸發
+                if noToolResetFlag then
+                    noToolResetFlag = false
+                    statusLabel.Text = "⚠️ 無工具偵測，重置中..."
                     statusLabel.TextColor3 = THEME.red
                     pcall(function() Players.LocalPlayer.Reset:FireServer() end)
                     task.wait(1)
                     continue
                 end
 
-                if not teleportSuccess then continue end  -- 5 秒沒傳成功，重新開始
+                if not teleportSuccess then continue end
 
-                -- 恢復狀態顯示
                 updateStatus()
 
                 if values.helpMode == "被打後不重置" then
@@ -1224,7 +1243,13 @@ helpTargetButton.MouseButton1Click:Connect(function()
                 else
                     runHelpLoopRagdollReset(hrp, hum, tgt)
                 end
+
+                -- 幫助迴圈結束後（死亡/重置），回到外層 while 重新開始
+                -- 全程偵測執行緒持續運行，旗標會在下一輪迴圈頂部被處理
             end
+
+            -- 幫助者停用時，終止全程偵測執行緒
+            task.cancel(noToolWatchThread)
         end)
 
         toggleUIState(helpTargetButton, helpTargetFrame, nil, true)
@@ -1354,7 +1379,7 @@ closeButton.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
-print("貓玲的靈魂精通腳本 v1.1 已載入!")
+print("貓玲的靈魂精通腳本 v1.2 已載入!")
 print("攻擊者功能:")
 print("  第一三任務: souls<100→GeneralHit | souls>=100→GeneralAbility(true)")
 print("  第二任務: souls<100→GeneralHit | souls>=100→soul:charge | charge=100→GeneralAbility(true)")
@@ -1363,4 +1388,4 @@ print("  固定位置: 鎖定當前 CFrame")
 print("幫助者功能:")
 print("  被blast時重置(預設): ragdoll且aoe_blast近→0.5s後Reset重生")
 print("  被打後不重置: 永久固定/跟隨")
-print("  大廳卡住偵測(v1.1新增): 重生後0.5s無Tool→自動Reset重跑流程")
+print("  全程無工具偵測(v1.2修改): 任何時候持續偵測，0.5s無Tool→自動Reset重跑流程")
