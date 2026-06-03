@@ -1,4 +1,4 @@
--- 貓玲的靈魂精通腳本 v1.0
+-- 貓玲的靈魂精通腳本 v1.1
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -130,6 +130,23 @@ local function getSelfAttr(name)
     return pcall(function() return char:GetAttribute(name) end) and char:GetAttribute(name) or nil
 end
 
+-- 檢查角色或背包是否有 Tool
+local function hasTool()
+    local c = player.Character
+    if c then
+        for _, v in ipairs(c:GetChildren()) do
+            if v:IsA("Tool") then return true end
+        end
+    end
+    local bp = player:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, v in ipairs(bp:GetChildren()) do
+            if v:IsA("Tool") then return true end
+        end
+    end
+    return false
+end
+
 -- ============================================================
 -- UI 建構
 -- ============================================================
@@ -141,7 +158,6 @@ screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 screenGui.DisplayOrder = 10001
 
 local function parentUI(g)
-    -- 依序嘗試：gethui → CoreGui → playerGui
     local ok = false
     if not ok then
         ok = pcall(function()
@@ -407,7 +423,7 @@ local function createInputRow(parent, labelText, defaultVal, unitText, order)
 end
 
 -- ============================================================
--- 頁面1：攻擊者（只有2個控制項）
+-- 頁面1：攻擊者
 -- ============================================================
 
 -- 任務選擇
@@ -605,7 +621,6 @@ questModeBtn.MouseButton1Click:Connect(function()
         questModeBtn.Text = "第一三任務"
         questModeBtn.BackgroundColor3 = Color3.fromRGB(100, 60, 180)
     end
-    -- 如果攻擊中，停止
     if toggles.attacker then
         toggles.attacker = false
         if connections.attacker then
@@ -620,7 +635,6 @@ end)
 -- 攻擊者主邏輯
 -- ============================================================
 
--- 第一、三任務：souls < 100 → GeneralHit；souls >= 100 → 等幫助者條件（最短5秒）→ Ability(true)
 local function runQuest13()
     while toggles.attacker do
         local char = player.Character
@@ -637,7 +651,6 @@ local function runQuest13()
             end
             task.wait(0.8)
         else
-            -- souls >= 100，最短等 5 秒，且幫助者非 ragdoll 且在範圍內才發動
             local abilityDist = 15
             local function helperReady()
                 local myChar = player.Character
@@ -655,7 +668,6 @@ local function runQuest13()
                 return minDist <= abilityDist
             end
 
-            -- 最多等 5 秒，幫助者到了可提前發動
             local waitTimeout = tick() + 5
             while toggles.attacker and tick() < waitTimeout do
                 if helperReady() then break end
@@ -667,7 +679,6 @@ local function runQuest13()
                 ReplicatedStorage.GeneralAbility:FireServer(true)
             end)
             task.wait(0.1)
-            -- 等 souls 重置
             local timeout = tick() + 5
             while toggles.attacker and tick() < timeout do
                 local c = player.Character
@@ -678,7 +689,6 @@ local function runQuest13()
     end
 end
 
--- 第二任務：souls < 100 → GeneralHit；souls >= 100 → charge；charge = 100 → Ability(true)
 local function runQuest2()
     while toggles.attacker do
         local char = player.Character
@@ -687,7 +697,6 @@ local function runQuest2()
         local souls = char:GetAttribute("souls") or 0
 
         if souls < 100 then
-            -- 攻擊最近目標直到 souls >= 100
             local torso = getNearestTargetTorso()
             if torso then
                 pcall(function()
@@ -696,7 +705,6 @@ local function runQuest2()
             end
             task.wait(0.8)
         else
-            -- 開始充能
             local charge = char:GetAttribute("charge") or 0
             if charge < 100 then
                 pcall(function()
@@ -710,12 +718,10 @@ local function runQuest2()
                 end)
                 task.wait(0.05)
             else
-                -- charge = 100，等幫助者（最近玩家）從 ragdoll 恢復且在 15 單位內再發動能力
                 local function helperReadyToAbility()
                     local myChar = player.Character
                     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
                     if not myHrp then return false end
-                    -- 找最近玩家
                     local nearestP = nil
                     local minDist = math.huge
                     for _, p in ipairs(Players:GetPlayers()) do
@@ -728,12 +734,10 @@ local function runQuest2()
                         end
                     end
                     if not nearestP then return false end
-                    -- 非 ragdoll 且在 15 單位內
                     if isPlayerRagdoll(nearestP) then return false end
                     return minDist <= 15
                 end
 
-                -- 等待條件成立（最多等 3 秒）
                 local waitTimeout = tick() + 3
                 while toggles.attacker and tick() < waitTimeout do
                     if helperReadyToAbility() then break end
@@ -742,12 +746,10 @@ local function runQuest2()
 
                 if not toggles.attacker then break end
 
-                -- 發動能力
                 pcall(function()
                     ReplicatedStorage.GeneralAbility:FireServer(true)
                 end)
                 task.wait(0.1)
-                -- 等待 souls 和 charge 重置後繼續
                 local timeout = tick() + 5
                 while toggles.attacker and tick() < timeout do
                     local c = player.Character
@@ -763,10 +765,8 @@ local function runQuest2()
     end
 end
 
--- 第四任務：GeneralHit → 等目標非 ragdoll → GeneralAbility(false) → 等幫助者非 ragdoll → 重複
 local function runQuest4()
     while toggles.attacker do
-        -- 找最近目標
         local nearestPlayer = nil
         local char = player.Character
         if char and char:FindFirstChild("HumanoidRootPart") then
@@ -786,7 +786,6 @@ local function runQuest4()
         if nearestPlayer and nearestPlayer.Character then
             local torso = nearestPlayer.Character:FindFirstChild("Torso")
             if torso then
-                -- 記錄打擊前的 Slaps 數值
                 local slapsBefore = 0
                 pcall(function()
                     local ls = player.leaderstats
@@ -795,14 +794,12 @@ local function runQuest4()
                     end
                 end)
 
-                -- 攻擊
                 pcall(function()
                     ReplicatedStorage.GeneralHit:FireServer(torso)
                 end)
 
                 task.wait(0.3)
 
-                -- 檢查 Slaps 是否有增加，沒有則補點擊畫面
                 local slapsAfter = 0
                 pcall(function()
                     local ls = player.leaderstats
@@ -812,7 +809,6 @@ local function runQuest4()
                 end)
 
                 if slapsAfter <= slapsBefore then
-                    -- Slaps 沒變，直接再補打一次
                     pcall(function()
                         ReplicatedStorage.GeneralHit:FireServer(torso)
                     end)
@@ -821,7 +817,6 @@ local function runQuest4()
 
                 task.wait(0.05)
 
-                -- 等目標不是 ragdoll（最多等 5 秒）
                 local waitTimeout = tick() + 5
                 while toggles.attacker and tick() < waitTimeout do
                     if not isPlayerRagdoll(nearestPlayer) then break end
@@ -830,7 +825,6 @@ local function runQuest4()
 
                 if not toggles.attacker then break end
 
-                -- 發動能力前：確認幫助者非 ragdoll 且在自己正前方（最多等 8 秒）
                 local myChar2 = player.Character
                 local myHrp2 = myChar2 and myChar2:FindFirstChild("HumanoidRootPart")
                 local helper = nil
@@ -852,7 +846,6 @@ local function runQuest4()
                         local hc = helper.Character
                         local hhrp = hc and hc:FindFirstChild("HumanoidRootPart")
                         if h2 and hhrp and not isPlayerRagdoll(helper) then
-                            -- 判斷幫助者是否在正前方：dot product > 0.5（約 60 度內）
                             local toHelper = (hhrp.Position - h2.Position).Unit
                             local forward = h2.CFrame.LookVector
                             if toHelper:Dot(forward) > 0.5 then break end
@@ -863,12 +856,10 @@ local function runQuest4()
 
                 if not toggles.attacker then break end
 
-                -- 發動能力
                 pcall(function()
                     ReplicatedStorage.GeneralAbility:FireServer(false)
                 end)
 
-                -- 等幫助者從 ragdoll 恢復後再繼續（最多等 8 秒）
                 if helper then
                     local helperTimeout2 = tick() + 8
                     while toggles.attacker and tick() < helperTimeout2 do
@@ -918,14 +909,12 @@ helpModeButton.MouseButton1Click:Connect(function()
         values.helpMode = "被打後不重置"
         helpModeButton.Text = "被打後不重置"
         helpModeButton.BackgroundColor3 = Color3.fromRGB(150, 80, 180)
-        -- 切換到被打後不重置：預設距離改 10
         values.helpDistance = 10
         helpDistanceInput.Text = "10"
     else
         values.helpMode = "被blast時重置"
         helpModeButton.Text = "被blast時重置"
         helpModeButton.BackgroundColor3 = Color3.fromRGB(70, 130, 200)
-        -- 切換到被blast時重置：預設距離改 5
         values.helpDistance = 5
         helpDistanceInput.Text = "5"
     end
@@ -961,14 +950,13 @@ end)
 -- ============================================================
 -- 共用：偵測 blast 在 50 單位內，持續把 blast 下所有部件傳到自己位置直到消失
 -- ============================================================
-local activeBlastLoops = {}  -- 追蹤已在處理的 blast，避免重複
+local activeBlastLoops = {}
 
 local function pullNearbyBlast(hrp)
     pcall(function()
         local myPos = hrp.Position
         for _, obj in ipairs(Workspace:GetDescendants()) do
             if obj.Name == "blast" and not activeBlastLoops[obj] then
-                -- 找代表位置的 part
                 local refPart
                 if obj:IsA("BasePart") then
                     refPart = obj
@@ -977,12 +965,10 @@ local function pullNearbyBlast(hrp)
                 end
                 if refPart and (refPart.Position - myPos).Magnitude <= 50 then
                     activeBlastLoops[obj] = true
-                    -- 用 task.spawn 持續追蹤這個 blast 直到消失
                     task.spawn(function()
                         while obj and obj.Parent and hrp and hrp.Parent and toggles.helpTarget do
                             local target = hrp.Position
                             pcall(function()
-                                -- 把 blast 下所有 BasePart 都傳到自己位置
                                 if obj:IsA("BasePart") then
                                     obj.CFrame = CFrame.new(target)
                                 elseif obj:IsA("Model") then
@@ -1024,7 +1010,6 @@ local function runHelpLoopNoReset(hrp, hum, tgt)
             end
         end)
 
-        -- 偵測並拉近 blast
         pullNearbyBlast(hrp)
 
         task.wait()
@@ -1033,12 +1018,9 @@ end
 
 -- ============================================================
 -- 幫助者位置迴圈：被blast時重置
--- ragdoll 時，若 aoe_blast 在自己 30 單位內 且 自己在攻擊者 15 單位內 → 等 0.5s 後重置
--- 其他情況 ragdoll → 等自然結束，不干涉
 -- ============================================================
 local function runHelpLoopRagdollReset(hrp, hum, tgt)
 
-    -- 檢查是否有 aoe_blast 在自己 30 單位內
     local function aoeBlastNearby()
         local result = false
         pcall(function()
@@ -1061,7 +1043,6 @@ local function runHelpLoopRagdollReset(hrp, hum, tgt)
         return result
     end
 
-    -- 檢查自己是否在攻擊者（tgt）15 單位內
     local function nearAttacker()
         local result = false
         pcall(function()
@@ -1077,7 +1058,6 @@ local function runHelpLoopRagdollReset(hrp, hum, tgt)
         if not (hrp and hrp.Parent) then break end
         if hum.Health <= 0 then break end
 
-        -- ragdoll 和非 ragdoll 都固定/跟隨位置
         pcall(function()
             if toggles.fixedPosHelp and values.fixedCFrame then
                 hrp.CFrame = values.fixedCFrame
@@ -1091,19 +1071,15 @@ local function runHelpLoopRagdollReset(hrp, hum, tgt)
             end
         end)
 
-        -- 偵測並拉近 blast
         pullNearbyBlast(hrp)
 
-        -- ragdoll 中：判斷是否需要重置
         if isSelfRagdoll() then
             if aoeBlastNearby() and nearAttacker() then
-                -- 條件成立，等 0.5 秒後 Reset
                 task.wait(0.5)
                 if not toggles.helpTarget then break end
                 pcall(function()
                     Players.LocalPlayer.Reset:FireServer()
                 end)
-                -- 等重生（hrp 和 hum 會失效，外層迴圈會 break，由主流程重新啟動）
                 task.wait(0.1)
                 break
             end
@@ -1186,12 +1162,30 @@ helpTargetButton.MouseButton1Click:Connect(function()
                 task.wait(0.5)
                 if not toggles.helpTarget then break end
 
-                -- 傳送到目標，若5秒內沒成功則重新開始流程
+                -- ── 大廳卡住偵測 ────────────────────────────────────
+                -- 死後重生進大廳，若持續 0.5 秒都沒有 Tool → 視為卡住
+                local helpDone    = false
+                local lobbyStuck  = false
+                local noToolTimer = 0
+
+                local noToolThread = task.spawn(function()
+                    while not helpDone and toggles.helpTarget do
+                        noToolTimer = hasTool() and 0 or noToolTimer + 0.1
+                        if noToolTimer >= 0.5 then
+                            lobbyStuck = true
+                            helpDone   = true
+                        end
+                        task.wait(0.1)
+                    end
+                end)
+                -- ────────────────────────────────────────────────────
+
+                -- 傳送到目標，若 5 秒內沒成功或偵測到卡住則重新開始流程
                 local teleportSuccess = false
                 local tpStart = tick()
                 while toggles.helpTarget and tick() - tpStart < 5 do
+                    if helpDone then break end  -- 卡住偵測提前中止
                     teleportToTarget(hrp, tgt)
-                    -- 檢查是否已到目標附近（5單位內視為成功）
                     pcall(function()
                         local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
                         if tgtRoot and hrp and hrp.Parent then
@@ -1203,8 +1197,27 @@ helpTargetButton.MouseButton1Click:Connect(function()
                     if teleportSuccess then break end
                     task.wait(0.5)
                 end
+
+                -- 偵測執行緒收尾
+                helpDone = true
+                task.cancel(noToolThread)
+                noToolThread = nil
+
                 if not toggles.helpTarget then break end
-                if not teleportSuccess then continue end  -- 5秒沒傳成功，重新開始
+
+                -- 卡住：重置後重跑整個流程
+                if lobbyStuck then
+                    statusLabel.Text = "⚠️ 大廳卡住，重置中..."
+                    statusLabel.TextColor3 = THEME.red
+                    pcall(function() Players.LocalPlayer.Reset:FireServer() end)
+                    task.wait(1)
+                    continue
+                end
+
+                if not teleportSuccess then continue end  -- 5 秒沒傳成功，重新開始
+
+                -- 恢復狀態顯示
+                updateStatus()
 
                 if values.helpMode == "被打後不重置" then
                     runHelpLoopNoReset(hrp, hum, tgt)
@@ -1341,12 +1354,13 @@ closeButton.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
-print("貓玲的靈魂精通腳本 v1.0 已載入!")
+print("貓玲的靈魂精通腳本 v1.1 已載入!")
 print("攻擊者功能:")
 print("  第一三任務: souls<100→GeneralHit | souls>=100→GeneralAbility(true)")
 print("  第二任務: souls<100→GeneralHit | souls>=100→soul:charge | charge=100→GeneralAbility(true)")
 print("  第四任務: GeneralHit → 等非ragdoll → GeneralAbility(false) → 0.5s → 循環")
 print("  固定位置: 鎖定當前 CFrame")
 print("幫助者功能:")
-print("  被blast時重置(預設): ragdoll且LastSlappedBy.Time未增加→傳Teleport1重置")
+print("  被blast時重置(預設): ragdoll且aoe_blast近→0.5s後Reset重生")
 print("  被打後不重置: 永久固定/跟隨")
+print("  大廳卡住偵測(v1.1新增): 重生後0.5s無Tool→自動Reset重跑流程")
