@@ -1,4 +1,4 @@
--- 貓玲的靈魂精通腳本 v1.3
+-- 貓玲的靈魂精通腳本 v1.4
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -1112,42 +1112,50 @@ helpTargetButton.MouseButton1Click:Connect(function()
         connections.helpTarget = task.spawn(function()
 
             -- ============================================================
-            -- v1.3 修改：全程無工具偵測執行緒
-            -- 不論任何時間點，只要 toggles.helpTarget 為 true 就持續監控。
-            -- 累計 0.5 秒沒有 Tool → 直接傳送到 Teleport1 再傳送到目標位置，不 Reset。
+            -- v1.4 重寫：單一狀態機主迴圈
+            --
+            -- 狀態流程：
+            --   WAIT_ALIVE  → 等角色活著且 HRP 存在
+            --   GOTO_LOBBY  → 傳到 Teleport1
+            --   WAIT_TOOL   → 等工具出現（代表遊戲資源給齊）
+            --   GOTO_TARGET → 傳到目標旁邊
+            --   HELPING     → 執行幫助迴圈，同時每幀偵測：
+            --                   - 死亡（Health<=0 或 HRP 消失）
+            --                   - 失去工具
+            --                 任一發生 → 回到 WAIT_ALIVE
             -- ============================================================
-            local noToolTpFlag = false   -- 讓外層流程知道要執行重新傳送
-            local noToolWatchThread = task.spawn(function()
-                local noToolTimer = 0
-                while toggles.helpTarget do
-                    if hasTool() then
-                        noToolTimer = 0     -- 有工具就歸零
-                    else
-                        noToolTimer = noToolTimer + 0.1
-                        if noToolTimer >= 0.5 then
-                            noToolTpFlag = true
-                            noToolTimer = 0  -- 歸零，避免重複觸發太快
-                        end
-                    end
-                    task.wait(0.1)
-                end
-            end)
 
-            local function waitForAliveCharacter(timeout)
-                local t = tick()
-                while tick() - t < (timeout or 15) do
-                    if not toggles.helpTarget then return nil, nil, nil end
-                    local c = player.Character
-                    if c then
-                        local hrp = c:FindFirstChild("HumanoidRootPart")
-                        local hum = c:FindFirstChildOfClass("Humanoid")
-                        if hrp and hum and hum.Health > 0 then
-                            return c, hrp, hum
-                        end
-                    end
-                    task.wait(0.2)
+            local STATE = {
+                WAIT_ALIVE  = "WAIT_ALIVE",
+                GOTO_LOBBY  = "GOTO_LOBBY",
+                WAIT_TOOL   = "WAIT_TOOL",
+                GOTO_TARGET = "GOTO_TARGET",
+                HELPING     = "HELPING",
+            }
+            local state = STATE.WAIT_ALIVE
+
+            -- 目前幫助迴圈用到的 hrp / hum，讓監控能存取
+            local activeHrp = nil
+            local activeHum = nil
+
+            local function getAliveHrpHum()
+                local c = player.Character
+                if not c then return nil, nil end
+                local hrp = c:FindFirstChild("HumanoidRootPart")
+                local hum = c:FindFirstChildOfClass("Humanoid")
+                if hrp and hum and hum.Health > 0 then
+                    return hrp, hum
                 end
-                return nil, nil, nil
+                return nil, nil
+            end
+
+            local function isDead()
+                local c = player.Character
+                if not c then return true end
+                local hrp = c:FindFirstChild("HumanoidRootPart")
+                local hum = c:FindFirstChildOfClass("Humanoid")
+                if not hrp or not hum or hum.Health <= 0 then return true end
+                return false
             end
 
             local function teleportToLobby(hrp)
@@ -1160,6 +1168,7 @@ helpTargetButton.MouseButton1Click:Connect(function()
             end
 
             local function teleportToTarget(hrp, tgt)
+                local ok = false
                 pcall(function()
                     if not (hrp and hrp.Parent) then return end
                     local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
@@ -1169,126 +1178,198 @@ helpTargetButton.MouseButton1Click:Connect(function()
                         local newCFrame = CFrame.new(newPos, newPos + lookDir)
                         hrp.CFrame = newCFrame
                         values.fixedCFrame = newCFrame
+                        ok = true
                     end
                 end)
+                return ok
             end
 
-            -- 無工具時的重新傳送流程：Teleport1 → 目標位置
-            local function doNoToolReroute(hrp, tgt)
-                if not (hrp and hrp.Parent) then return end
-                statusLabel.Text = "⚠️ 無工具，重新傳送中..."
-                statusLabel.TextColor3 = THEME.red
-                teleportToLobby(hrp)
-                task.wait(0.3)
-                if not toggles.helpTarget then return end
-                teleportToTarget(hrp, tgt)
-                task.wait(0.1)
-                updateStatus()
+            -- 幫助迴圈結束訊號（由監控執行緒設置，讓幫助迴圈自行跳出）
+            local helpShouldStop = false
+
+            -- 改寫 runHelpLoopNoReset：每次 task.wait() 後檢查 helpShouldStop
+            local function runHelpLoopNoResetSM(hrp, hum, tgt)
+                while toggles.helpTarget and not helpShouldStop do
+                    if not (hrp and hrp.Parent) then break end
+                    if hum.Health <= 0 then break end
+
+                    pcall(function()
+                        if toggles.fixedPosHelp and values.fixedCFrame then
+                            hrp.CFrame = values.fixedCFrame
+                        elseif not toggles.fixedPosHelp then
+                            local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+                            if tgtRoot then
+                                local lookDir = tgtRoot.CFrame.LookVector
+                                local newPos = tgtRoot.Position + (lookDir * values.helpDistance)
+                                hrp.CFrame = CFrame.new(newPos, newPos + lookDir)
+                            end
+                        end
+                    end)
+
+                    pullNearbyBlast(hrp)
+                    task.wait()
+                end
             end
 
+            -- 改寫 runHelpLoopRagdollReset：同上加入 helpShouldStop 檢查
+            local function runHelpLoopRagdollResetSM(hrp, hum, tgt)
+                local function aoeBlastNearby()
+                    local result = false
+                    pcall(function()
+                        local myPos = hrp.Position
+                        for _, obj in ipairs(Workspace:GetDescendants()) do
+                            if obj.Name == "aoe_blast" then
+                                local objPos
+                                if obj:IsA("BasePart") then
+                                    objPos = obj.Position
+                                elseif obj:IsA("Model") and obj.PrimaryPart then
+                                    objPos = obj.PrimaryPart.Position
+                                end
+                                if objPos and (objPos - myPos).Magnitude <= 30 then
+                                    result = true
+                                    break
+                                end
+                            end
+                        end
+                    end)
+                    return result
+                end
+
+                local function nearAttacker()
+                    local result = false
+                    pcall(function()
+                        local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+                        if tgtRoot then
+                            result = (tgtRoot.Position - hrp.Position).Magnitude <= 15
+                        end
+                    end)
+                    return result
+                end
+
+                while toggles.helpTarget and not helpShouldStop do
+                    if not (hrp and hrp.Parent) then break end
+                    if hum.Health <= 0 then break end
+
+                    pcall(function()
+                        if toggles.fixedPosHelp and values.fixedCFrame then
+                            hrp.CFrame = values.fixedCFrame
+                        elseif not toggles.fixedPosHelp then
+                            local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+                            if tgtRoot then
+                                local lookDir = tgtRoot.CFrame.LookVector
+                                local newPos = tgtRoot.Position + (lookDir * values.helpDistance)
+                                hrp.CFrame = CFrame.new(newPos, newPos + lookDir)
+                            end
+                        end
+                    end)
+
+                    pullNearbyBlast(hrp)
+
+                    if isSelfRagdoll() and aoeBlastNearby() and nearAttacker() then
+                        task.wait(0.5)
+                        if not toggles.helpTarget then break end
+                        pcall(function() Players.LocalPlayer.Reset:FireServer() end)
+                        task.wait(0.1)
+                        break
+                    end
+
+                    task.wait(0.05)
+                end
+            end
+
+            -- ── 主狀態機迴圈 ─────────────────────────────────────────────
             while toggles.helpTarget do
                 local tgt = values.targetPlayer
 
-                -- 若全程偵測執行緒已觸發旗標，直接執行重新傳送後繼續幫助迴圈
-                if noToolTpFlag then
-                    noToolTpFlag = false
-                    local c = player.Character
-                    local hrp = c and c:FindFirstChild("HumanoidRootPart")
-                    if hrp then
-                        doNoToolReroute(hrp, tgt)
+                -- ── WAIT_ALIVE ────────────────────────────────────────────
+                if state == STATE.WAIT_ALIVE then
+                    statusLabel.Text = "⏳ 等待角色載入..."
+                    statusLabel.TextColor3 = THEME.textMuted
+                    local hrp, hum = getAliveHrpHum()
+                    if hrp and hum then
+                        activeHrp = hrp
+                        activeHum = hum
+                        state = STATE.GOTO_LOBBY
+                    else
+                        task.wait(0.2)
                     end
-                    continue
-                end
 
-                local _, hrp, hum = waitForAliveCharacter(15)
-                if not hrp then task.wait(0.5) continue end
-                if not toggles.helpTarget then break end
-
-                -- 等待角色期間也可能觸發旗標，檢查並處理
-                if noToolTpFlag then
-                    noToolTpFlag = false
-                    doNoToolReroute(hrp, tgt)
-                    continue
-                end
-
-                teleportToLobby(hrp)
-                task.wait(0.5)
-                if not toggles.helpTarget then break end
-
-                -- 傳送到目標（最多 5 秒），期間持續檢查全程偵測旗標
-                local teleportSuccess = false
-                local tpStart = tick()
-                while toggles.helpTarget and tick() - tpStart < 5 do
-                    -- 傳送途中若觸發旗標，清除後繼續傳送（本次就是在傳送，不需重複處理）
-                    if noToolTpFlag then noToolTpFlag = false end
-                    teleportToTarget(hrp, tgt)
-                    pcall(function()
-                        local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
-                        if tgtRoot and hrp and hrp.Parent then
-                            if (tgtRoot.Position - hrp.Position).Magnitude <= (values.helpDistance + 5) then
-                                teleportSuccess = true
-                            end
-                        end
-                    end)
-                    if teleportSuccess then break end
-                    task.wait(0.5)
-                end
-
-                if not toggles.helpTarget then break end
-                if not teleportSuccess then continue end
-
-                updateStatus()
-
-                if values.helpMode == "被打後不重置" then
-                    -- 幫助迴圈內另開執行緒監控無工具旗標，觸發時中斷迴圈並重新傳送
-                    local helpInterrupted = false
-                    local helpMonitor = task.spawn(function()
-                        while toggles.helpTarget and not helpInterrupted do
-                            if noToolTpFlag then
-                                noToolTpFlag = false
-                                helpInterrupted = true
-                            end
-                            task.wait(0.05)
-                        end
-                    end)
-                    runHelpLoopNoReset(hrp, hum, tgt)
-                    helpInterrupted = true
-                    task.cancel(helpMonitor)
-                    -- 若是被無工具旗標中斷，執行重新傳送
-                    if noToolTpFlag or helpInterrupted then
-                        noToolTpFlag = false
-                        local c2 = player.Character
-                        local hrp2 = c2 and c2:FindFirstChild("HumanoidRootPart")
-                        if hrp2 then doNoToolReroute(hrp2, tgt) end
+                -- ── GOTO_LOBBY ────────────────────────────────────────────
+                elseif state == STATE.GOTO_LOBBY then
+                    statusLabel.Text = "🔄 傳送到大廳..."
+                    statusLabel.TextColor3 = THEME.textMuted
+                    -- 傳送前確認還活著
+                    if isDead() then
+                        state = STATE.WAIT_ALIVE
+                        continue
                     end
-                else
-                    -- 幫助迴圈內另開執行緒監控無工具旗標
-                    local helpInterrupted = false
-                    local helpMonitor = task.spawn(function()
-                        while toggles.helpTarget and not helpInterrupted do
-                            if noToolTpFlag then
-                                noToolTpFlag = false
-                                helpInterrupted = true
+                    teleportToLobby(activeHrp)
+                    task.wait(0.3)
+                    state = STATE.WAIT_TOOL
+
+                -- ── WAIT_TOOL ─────────────────────────────────────────────
+                elseif state == STATE.WAIT_TOOL then
+                    statusLabel.Text = "⏳ 等待工具載入..."
+                    statusLabel.TextColor3 = THEME.textMuted
+                    -- 若死亡則重頭
+                    if isDead() then
+                        state = STATE.WAIT_ALIVE
+                        continue
+                    end
+                    if hasTool() then
+                        state = STATE.GOTO_TARGET
+                    else
+                        -- 持續傳到 Teleport1 直到拿到工具
+                        teleportToLobby(activeHrp)
+                        task.wait(0.3)
+                    end
+
+                -- ── GOTO_TARGET ───────────────────────────────────────────
+                elseif state == STATE.GOTO_TARGET then
+                    statusLabel.Text = "🔄 傳送到目標..."
+                    statusLabel.TextColor3 = THEME.textMuted
+                    if isDead() or not hasTool() then
+                        state = STATE.WAIT_ALIVE
+                        continue
+                    end
+                    local ok = teleportToTarget(activeHrp, tgt)
+                    if ok then
+                        state = STATE.HELPING
+                    else
+                        task.wait(0.5)
+                    end
+
+                -- ── HELPING ───────────────────────────────────────────────
+                elseif state == STATE.HELPING then
+                    updateStatus()
+                    helpShouldStop = false
+
+                    -- 監控執行緒：偵測死亡或失去工具，立刻設 helpShouldStop
+                    local monitor = task.spawn(function()
+                        while toggles.helpTarget and not helpShouldStop do
+                            if isDead() or not hasTool() then
+                                helpShouldStop = true
                             end
                             task.wait(0.05)
                         end
                     end)
-                    runHelpLoopRagdollReset(hrp, hum, tgt)
-                    helpInterrupted = true
-                    task.cancel(helpMonitor)
-                    if noToolTpFlag or helpInterrupted then
-                        noToolTpFlag = false
-                        local c2 = player.Character
-                        local hrp2 = c2 and c2:FindFirstChild("HumanoidRootPart")
-                        if hrp2 then doNoToolReroute(hrp2, tgt) end
-                    end
-                end
 
-                -- 幫助迴圈結束後回到外層 while 重新開始
+                    -- 執行幫助迴圈（SM 版本，會檢查 helpShouldStop）
+                    if values.helpMode == "被打後不重置" then
+                        runHelpLoopNoResetSM(activeHrp, activeHum, tgt)
+                    else
+                        runHelpLoopRagdollResetSM(activeHrp, activeHum, tgt)
+                    end
+
+                    -- 迴圈結束，停監控
+                    helpShouldStop = true
+                    task.cancel(monitor)
+
+                    -- 不管是死亡、失去工具、還是正常跳出，一律回 WAIT_ALIVE
+                    -- WAIT_ALIVE 會等角色活著並有 HRP 後才繼續
+                    state = STATE.WAIT_ALIVE
+                end
             end
-
-            -- 幫助者停用時，終止全程偵測執行緒
-            task.cancel(noToolWatchThread)
         end)
 
         toggleUIState(helpTargetButton, helpTargetFrame, nil, true)
@@ -1418,13 +1499,15 @@ closeButton.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
-print("貓玲的靈魂精通腳本 v1.3 已載入!")
+print("貓玲的靈魂精通腳本 v1.4 已載入!")
 print("攻擊者功能:")
 print("  第一三任務: souls<100→GeneralHit | souls>=100→GeneralAbility(true)")
 print("  第二任務: souls<100→GeneralHit | souls>=100→soul:charge | charge=100→GeneralAbility(true)")
 print("  第四任務: GeneralHit → 等非ragdoll → GeneralAbility(false) → 0.5s → 循環")
 print("  固定位置: 鎖定當前 CFrame")
-print("幫助者功能:")
-print("  被blast時重置(預設): ragdoll且aoe_blast近→0.5s後Reset重生")
-print("  被打後不重置: 永久固定/跟隨")
-print("  全程無工具偵測(v1.3修改): 任何時候持續偵測，0.5s無Tool→傳送Teleport1→傳送目標位置（不Reset）")
+print("幫助者功能(v1.4重寫為狀態機):")
+print("  WAIT_ALIVE  → 等角色活著")
+print("  GOTO_LOBBY  → 傳送到 Teleport1")
+print("  WAIT_TOOL   → 等工具出現（持續傳到 Teleport1）")
+print("  GOTO_TARGET → 傳送到目標旁邊")
+print("  HELPING     → 幫助迴圈，監控死亡/失去工具 → 觸發即回 WAIT_ALIVE")
