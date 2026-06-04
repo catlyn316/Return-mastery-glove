@@ -1,4 +1,4 @@
--- 貓玲的靈魂精通腳本 v1.2
+-- 貓玲的靈魂精通腳本 v1.3
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -1112,11 +1112,11 @@ helpTargetButton.MouseButton1Click:Connect(function()
         connections.helpTarget = task.spawn(function()
 
             -- ============================================================
-            -- v1.2 修改：全程無工具偵測執行緒
-            -- 不論死亡、傳送中、幫助迴圈執行中，只要 toggles.helpTarget 為 true
-            -- 持續監控。累計 0.5 秒沒有 Tool → 觸發重置。
+            -- v1.3 修改：全程無工具偵測執行緒
+            -- 不論任何時間點，只要 toggles.helpTarget 為 true 就持續監控。
+            -- 累計 0.5 秒沒有 Tool → 直接傳送到 Teleport1 再傳送到目標位置，不 Reset。
             -- ============================================================
-            local noToolResetFlag = false   -- 讓外層流程知道要執行重置
+            local noToolTpFlag = false   -- 讓外層流程知道要執行重新傳送
             local noToolWatchThread = task.spawn(function()
                 local noToolTimer = 0
                 while toggles.helpTarget do
@@ -1125,7 +1125,7 @@ helpTargetButton.MouseButton1Click:Connect(function()
                     else
                         noToolTimer = noToolTimer + 0.1
                         if noToolTimer >= 0.5 then
-                            noToolResetFlag = true
+                            noToolTpFlag = true
                             noToolTimer = 0  -- 歸零，避免重複觸發太快
                         end
                     end
@@ -1173,16 +1173,30 @@ helpTargetButton.MouseButton1Click:Connect(function()
                 end)
             end
 
+            -- 無工具時的重新傳送流程：Teleport1 → 目標位置
+            local function doNoToolReroute(hrp, tgt)
+                if not (hrp and hrp.Parent) then return end
+                statusLabel.Text = "⚠️ 無工具，重新傳送中..."
+                statusLabel.TextColor3 = THEME.red
+                teleportToLobby(hrp)
+                task.wait(0.3)
+                if not toggles.helpTarget then return end
+                teleportToTarget(hrp, tgt)
+                task.wait(0.1)
+                updateStatus()
+            end
+
             while toggles.helpTarget do
                 local tgt = values.targetPlayer
 
-                -- 若全程偵測執行緒已觸發旗標，先執行重置再重跑
-                if noToolResetFlag then
-                    noToolResetFlag = false
-                    statusLabel.Text = "⚠️ 無工具偵測，重置中..."
-                    statusLabel.TextColor3 = THEME.red
-                    pcall(function() Players.LocalPlayer.Reset:FireServer() end)
-                    task.wait(1)
+                -- 若全程偵測執行緒已觸發旗標，直接執行重新傳送後繼續幫助迴圈
+                if noToolTpFlag then
+                    noToolTpFlag = false
+                    local c = player.Character
+                    local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        doNoToolReroute(hrp, tgt)
+                    end
                     continue
                 end
 
@@ -1190,13 +1204,10 @@ helpTargetButton.MouseButton1Click:Connect(function()
                 if not hrp then task.wait(0.5) continue end
                 if not toggles.helpTarget then break end
 
-                -- 同樣在等待角色期間也可能觸發旗標，檢查一次
-                if noToolResetFlag then
-                    noToolResetFlag = false
-                    statusLabel.Text = "⚠️ 無工具偵測，重置中..."
-                    statusLabel.TextColor3 = THEME.red
-                    pcall(function() Players.LocalPlayer.Reset:FireServer() end)
-                    task.wait(1)
+                -- 等待角色期間也可能觸發旗標，檢查並處理
+                if noToolTpFlag then
+                    noToolTpFlag = false
+                    doNoToolReroute(hrp, tgt)
                     continue
                 end
 
@@ -1208,7 +1219,8 @@ helpTargetButton.MouseButton1Click:Connect(function()
                 local teleportSuccess = false
                 local tpStart = tick()
                 while toggles.helpTarget and tick() - tpStart < 5 do
-                    if noToolResetFlag then break end
+                    -- 傳送途中若觸發旗標，清除後繼續傳送（本次就是在傳送，不需重複處理）
+                    if noToolTpFlag then noToolTpFlag = false end
                     teleportToTarget(hrp, tgt)
                     pcall(function()
                         local tgtRoot = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
@@ -1223,29 +1235,56 @@ helpTargetButton.MouseButton1Click:Connect(function()
                 end
 
                 if not toggles.helpTarget then break end
-
-                -- 傳送期間被全程偵測觸發
-                if noToolResetFlag then
-                    noToolResetFlag = false
-                    statusLabel.Text = "⚠️ 無工具偵測，重置中..."
-                    statusLabel.TextColor3 = THEME.red
-                    pcall(function() Players.LocalPlayer.Reset:FireServer() end)
-                    task.wait(1)
-                    continue
-                end
-
                 if not teleportSuccess then continue end
 
                 updateStatus()
 
                 if values.helpMode == "被打後不重置" then
+                    -- 幫助迴圈內另開執行緒監控無工具旗標，觸發時中斷迴圈並重新傳送
+                    local helpInterrupted = false
+                    local helpMonitor = task.spawn(function()
+                        while toggles.helpTarget and not helpInterrupted do
+                            if noToolTpFlag then
+                                noToolTpFlag = false
+                                helpInterrupted = true
+                            end
+                            task.wait(0.05)
+                        end
+                    end)
                     runHelpLoopNoReset(hrp, hum, tgt)
+                    helpInterrupted = true
+                    task.cancel(helpMonitor)
+                    -- 若是被無工具旗標中斷，執行重新傳送
+                    if noToolTpFlag or helpInterrupted then
+                        noToolTpFlag = false
+                        local c2 = player.Character
+                        local hrp2 = c2 and c2:FindFirstChild("HumanoidRootPart")
+                        if hrp2 then doNoToolReroute(hrp2, tgt) end
+                    end
                 else
+                    -- 幫助迴圈內另開執行緒監控無工具旗標
+                    local helpInterrupted = false
+                    local helpMonitor = task.spawn(function()
+                        while toggles.helpTarget and not helpInterrupted do
+                            if noToolTpFlag then
+                                noToolTpFlag = false
+                                helpInterrupted = true
+                            end
+                            task.wait(0.05)
+                        end
+                    end)
                     runHelpLoopRagdollReset(hrp, hum, tgt)
+                    helpInterrupted = true
+                    task.cancel(helpMonitor)
+                    if noToolTpFlag or helpInterrupted then
+                        noToolTpFlag = false
+                        local c2 = player.Character
+                        local hrp2 = c2 and c2:FindFirstChild("HumanoidRootPart")
+                        if hrp2 then doNoToolReroute(hrp2, tgt) end
+                    end
                 end
 
-                -- 幫助迴圈結束後（死亡/重置），回到外層 while 重新開始
-                -- 全程偵測執行緒持續運行，旗標會在下一輪迴圈頂部被處理
+                -- 幫助迴圈結束後回到外層 while 重新開始
             end
 
             -- 幫助者停用時，終止全程偵測執行緒
@@ -1379,7 +1418,7 @@ closeButton.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
-print("貓玲的靈魂精通腳本 v1.2 已載入!")
+print("貓玲的靈魂精通腳本 v1.3 已載入!")
 print("攻擊者功能:")
 print("  第一三任務: souls<100→GeneralHit | souls>=100→GeneralAbility(true)")
 print("  第二任務: souls<100→GeneralHit | souls>=100→soul:charge | charge=100→GeneralAbility(true)")
@@ -1388,4 +1427,4 @@ print("  固定位置: 鎖定當前 CFrame")
 print("幫助者功能:")
 print("  被blast時重置(預設): ragdoll且aoe_blast近→0.5s後Reset重生")
 print("  被打後不重置: 永久固定/跟隨")
-print("  全程無工具偵測(v1.2修改): 任何時候持續偵測，0.5s無Tool→自動Reset重跑流程")
+print("  全程無工具偵測(v1.3修改): 任何時候持續偵測，0.5s無Tool→傳送Teleport1→傳送目標位置（不Reset）")
